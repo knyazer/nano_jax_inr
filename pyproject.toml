@@ -67,4 +67,4 @@ ignore = [
 ]
 
 [tool.ruff.lint.pep8-naming]
-extend-ignore-names = ["X"]
+extend-ignore-names = ["X*"]
