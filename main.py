@@ -1,6 +1,4 @@
 import sys
-import time
-from pathlib import Path
 
 import equinox as eqx
 import jax
@@ -16,7 +14,7 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 from sklearn.datasets import fetch_openml
 
 from dataloader import load_imagenette_images, prepare_datasets, preprocess_mnist
-from evaluation import compute_psnr, eval_image
+from evaluation import eval_image
 from model import MLP, CombinedModel, LatentMap
 from utils import make_mesh
 
