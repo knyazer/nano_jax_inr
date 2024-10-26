@@ -49,8 +49,6 @@ def eval_image(
         index = 0
         while (path := Path(f"log/{viz}_{index}.png")).exists():
             index += 1
-            if index > 100:
-                raise RuntimeError("Too many images saved: 100, probably wrong.")
 
         combined_image = Image.new(
             "RGB", (true_image_pil.width + pred_image_pil.width, true_image_pil.height)

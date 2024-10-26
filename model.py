@@ -35,16 +35,20 @@ class LatentMap(eqx.Module):
 
     def __call__(self, position: Float[Array, "2"]):
         int_pos = jnp.floor(position).astype(jnp.int32)
-        # linear-ish interpolation of neighbors
-
         neighbors = self.neighbor_map[int_pos[0], int_pos[1]]
         distances = jnp.linalg.norm(self.positions[neighbors] - int_pos, axis=1)
-        weights = jax.lax.stop_gradient(1.0 / (distances + 1e-6))
 
-        latent = jnp.sum(weights[:, None] * self.embeddings[neighbors], axis=0) / jnp.sum(weights)
+        if True:  # this branch is "joost's method" - which does not make any sense to me
+            latent = jnp.sum(distances[:, None] * self.embeddings[neighbors], axis=0)
+        else:
+            weights = jax.lax.stop_gradient(1.0 / (distances + 1e-6))
+            latent = jnp.sum(weights[:, None] * self.embeddings[neighbors], axis=0) / jnp.sum(
+                weights
+            )
         return latent
 
 
+"""
 latent_map = LatentMap(jr.PRNGKey(0), [(1, 1), (3, 3), (1, 3), (3, 1), (0, 0)], (4, 4))
 assert jnp.allclose(latent_map(jnp.array([0, 0], dtype=jnp.int32)), latent_map.embeddings[4])
 assert jnp.allclose(latent_map(jnp.array([1, 1], dtype=jnp.int32)), latent_map.embeddings[0])
@@ -53,6 +57,7 @@ assert jnp.allclose(
     jnp.mean(latent_map.embeddings[:-1], axis=0),
 )
 del latent_map
+"""
 
 
 class MLP(eqx.Module):
