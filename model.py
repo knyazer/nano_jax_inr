@@ -11,12 +11,35 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from utils import make_mesh
 
 
+## Some distance transformations
+def dists_identity(dists):
+    return dists
+
+
+def dists_to1(dists):
+    dists = dists / (dists.sum(axis=-1) + 1e-8)
+    return dists
+
+
+def dists_normalise(dists):
+    mean = dists.view(-1).mean()
+    std = dists.view(-1).std()
+    dists = (dists - mean) / std
+    return dists
+
+
+def dists_nonlinear(dists):
+    dists = dists / (dists.sum(axis=-1) + 1e-8)
+    return 1 - dists
+
+
 class LatentMap(eqx.Module):
     """Parametrized function to convert point in 2D (pixel coordinate) into a latent."""
 
     positions: Int[Array, "n dim"]
     neighbor_map: Int[Array, "w h num_neighbors"]
     embeddings: Array
+    harmonics: Float[Array, "32"]
 
     def __init__(self, key, positions, image):
         positions = jnp.array(positions)
@@ -35,9 +58,7 @@ class LatentMap(eqx.Module):
         shape = jnp.broadcast_shapes((image.max_shape()[0] * image.max_shape()[1], 4))
         dtype = jnp.result_type(jnp.int32)
         out_type = jax.ShapeDtypeStruct(shape, dtype)
-        nearest_indices = jax.pure_callback(
-            kd_neighbors_callback, out_type, positions, coords, vectorized=False
-        )
+        nearest_indices = jax.pure_callback(kd_neighbors_callback, out_type, positions, coords)
 
         neighbor_map = -jnp.ones((*image.max_shape(), 4))
         neighbor_map = neighbor_map.at[coords[:, 0], coords[:, 1]].set(nearest_indices)
@@ -45,6 +66,11 @@ class LatentMap(eqx.Module):
         self.neighbor_map = neighbor_map.astype(jnp.int32)
         self.positions = positions
         self.embeddings = jr.normal(key, (len(positions), 32)) * 1e-3
+
+        harmonics_range = jnp.array([2**-3, 2**12])
+        harmonics = jnp.linspace(jnp.log2(harmonics_range[0]), jnp.log2(harmonics_range[1]), 32)
+        harmonics = jnp.exp2(harmonics)
+        self.harmonics = harmonics
 
     @jax.named_scope("LatentMap.check")
     def check(self):
@@ -55,6 +81,9 @@ class LatentMap(eqx.Module):
         )
         return eqx.tree_at(lambda s: s.embeddings, self, new_embeddings)
 
+    def harm_function(self, x):
+        return jnp.cos(x)
+
     @jax.named_scope("LatentMap.call")
     def __call__(self, position: Float[Array, "2"]):
         int_pos = jnp.floor(position).astype(jnp.int32)
@@ -62,30 +91,17 @@ class LatentMap(eqx.Module):
         neighbors = eqx.error_if(
             neighbors, neighbors.sum() < 0, "Undefined neighbors: index out of bounds."
         )
+        latents = self.embeddings[neighbors]
         distances = jax.lax.stop_gradient(
             jnp.linalg.norm(self.positions[neighbors] - int_pos, axis=1)
         )
 
-        if True:  # this branch is "joost's method" - which does not make any sense to me
-            latent = jnp.sum(distances[:, None] * self.embeddings[neighbors], axis=0)
-        else:
-            weights = 1.0 / (distances + 1e-6)
-            latent = jnp.sum(weights[:, None] * self.embeddings[neighbors], axis=0) / jnp.sum(
-                weights
-            )
-        return latent
+        dist_fn = dists_nonlinear
+        distances = dist_fn(distances)
 
-
-"""
-latent_map = LatentMap(jr.PRNGKey(0), [(1, 1), (3, 3), (1, 3), (3, 1), (0, 0)], (4, 4))
-assert jnp.allclose(latent_map(jnp.array([0, 0], dtype=jnp.int32)), latent_map.embeddings[4])
-assert jnp.allclose(latent_map(jnp.array([1, 1], dtype=jnp.int32)), latent_map.embeddings[0])
-assert jnp.allclose(
-    latent_map(jnp.array([2, 2], dtype=jnp.int32)),
-    jnp.mean(latent_map.embeddings[:-1], axis=0),
-)
-del latent_map
-"""
+        harmonized = distances[:, None] @ self.harmonics[None, :]
+        out = harmonized * latents
+        return out.sum(axis=-2)
 
 
 class MLP(eqx.Module):

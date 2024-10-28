@@ -1,5 +1,7 @@
+import os
 import sys
 import time
+from pathlib import Path
 
 import equinox as eqx
 import jax
@@ -26,8 +28,6 @@ jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")  # noqa
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 
-# jax.config.update("jax_log_compiles", True)
-
 MAX_DIM = 600
 
 
@@ -35,20 +35,25 @@ class Image(eqx.Module):
     data: Float[Array, "2048 2048 c"]
     shape: Int[Array, "2"]
     channels: int
+    _max_shape: tuple
 
-    def __init__(self, data, shape, channels):
+    def __init__(self, data, shape, channels, maxsize=None):
         self.data = data
         self.shape = shape
         self.channels = channels
 
+        if maxsize is not None:
+            self._max_shape = (int(self.shape[0]), int(self.shape[1]))
+        else:
+            self._max_shape = (MAX_DIM, MAX_DIM)
+
     def max_shape(self):
-        return (MAX_DIM, MAX_DIM)
+        return self._max_shape
 
     def max_latents(self):
         return int(self.max_shape()[0] * self.max_shape()[1] * 0.05)
 
 
-@jax.profiler.annotate_function
 @jax.named_scope("get_latent_points")
 def get_latent_points(key: PRNGKeyArray, image: Image, fraction: float = 0.05):
     w, h, c = image.data.shape
@@ -77,7 +82,6 @@ def get_latent_points(key: PRNGKeyArray, image: Image, fraction: float = 0.05):
     return indices.astype(jnp.int32)
 
 
-@jax.profiler.annotate_function
 @jax.named_scope("train_step")
 def train_step(
     model: CombinedModel,
@@ -140,7 +144,7 @@ def train_image(image: Image, key: PRNGKeyArray, epochs: int = 1000) -> Combined
     def scan_fn(carry, _):
         model, opt_state, local_key = carry
         sample_key, subkey = jr.split(local_key)
-        batch_coords, batch_pixels = sample_pixels(image, subkey, fraction=0.25)
+        batch_coords, batch_pixels = sample_pixels(image, subkey, fraction=0.5)
         model, opt_state, loss = train_step(model, optim, opt_state, batch_coords, batch_pixels)
         model = model.check()
         return (model, opt_state, sample_key), loss
@@ -159,74 +163,42 @@ def main(argv):
     logging.get_absl_handler().python_handler.stream = sys.stdout
     logging.set_verbosity(logging.INFO)
 
-    prepare_datasets()
+    images = []
+    for file in os.listdir(Path("trial_images")):
+        if file.endswith((".png", ".JPEG")):
+            image_data = plt.imread(Path("trial_images") / file)
+            image_shape = image_data.shape[:2]
+            if len(image_data.shape) == 2:
+                image_data = image_data[..., None]
+                channels = 1
+            else:
+                channels = 3
+            # normalize image data
+            if image_data.max() > 2:  # check if we are dealing with 0-255 or 0-1
+                image_data = jnp.array(image_data, dtype=jnp.float32) / 255.0
+            images.append(
+                Image(
+                    data=jnp.array(image_data),
+                    shape=jnp.array(image_shape),
+                    channels=channels,
+                    maxsize="auto",
+                )
+            )
 
-    # Load MNIST data
-    logging.info("Loading MNIST dataset...")
-    mnist = fetch_openml("mnist_784", version=1, as_frame=False)
-    mnist_images, mnist_labels = preprocess_mnist(mnist)
-    logging.info("MNIST dataset loaded with %d samples.", mnist_images.shape[0])
+    fn = eqx.Partial(train_image, epochs=1000)
 
-    # Load Imagenette images
-    logging.info("Loading Imagenette images...")
-    imagenette_images = load_imagenette_images()
-    logging.info("Imagenette dataset loaded with some (?) samples.")
+    store = [[] for _ in images]
+    for key in jr.split(jr.key(0), 10):
+        for i, image in enumerate(images):
+            model = fn(image, key)
+            psnr = eval_image(model, image.data, viz="trial")
+            logging.info("PSNR for trial image: %.2f", psnr)
+            store[i].append(psnr)
 
-    # Limit to first 10 images from each dataset for training
-    num_train_mnist = 0
-    num_train_imagenette = 4
+    store = jnp.array(store)
 
-    # Train on MNIST images
-    logging.info("Training on first %d MNIST images...", num_train_mnist)
-    for idx in range(min(num_train_mnist, mnist_images.shape[0])):
-        image = mnist_images[idx].reshape(28, 28)
-        key = jr.PRNGKey(idx)
-        logging.info("Training MNIST image %d", idx + 1)
-        model = train_image(jnp.array(image), key, epochs=1000)
-        psnr = eval_image(model, jnp.array(image), viz="mnist")
-        logging.info("PSNR for MNIST image %d: %.2f", idx + 1, psnr)
-
-    # Train on Imagenette images
-    logging.info("Training on first %d Imagenette images...", num_train_imagenette)
-
-    imagenette_list = []
-    imagenette_image_list = []
-    for _ in range(num_train_imagenette):
-        image = next(imagenette_images)
-        w, h, c = image.shape
-        placeholder = jnp.full((MAX_DIM, MAX_DIM, c), jnp.nan)
-        placeholder = placeholder.at[:w, :h, :].set(image)
-        imagenette_list.append(Image(data=placeholder, shape=jnp.array([w, h]), channels=3))
-        imagenette_image_list.append(image)
-
-    imagenette_stacked_data = jnp.stack([image.data for image in imagenette_list])
-    imagenette_stacked_shape = jnp.stack([jnp.array(image.shape) for image in imagenette_list])
-
-    imagenette_stacked = Image(
-        data=imagenette_stacked_data, shape=imagenette_stacked_shape, channels=3
-    )
-
-    jax.log_compiles(True)
-    print("starting the bench...")
-    fn = eqx.filter_vmap(eqx.Partial(train_image, epochs=1000))
-    models = None
-    t = time.time()
-    for i in tqdm(range(10)):
-        key = jr.key(i)
-        models = fn(imagenette_stacked, jr.split(key, num_train_imagenette))
-        for idx, image in enumerate(imagenette_image_list):
-            model = jax.tree.map(lambda x: x[idx], models, is_leaf=eqx.is_inexact_array)
-            psnr = eval_image(model, image)
-            logging.info("PSNR for Imagenette image %d: %.2f", idx + 1, psnr)
-    print(f"took {time.time() - t:.2f}s for {10*num_train_imagenette} images of size {MAX_DIM}")
-
-    for idx, image in enumerate(imagenette_image_list):
-        model = jax.tree.map(lambda x: x[idx], models, is_leaf=eqx.is_inexact_array)
-        psnr = eval_image(model, image, viz="imagenette")
-        logging.info("PSNR for Imagenette image %d: %.2f", idx + 1, psnr)
-        jax.profiler.save_device_memory_profile("memory.prof")
-
-    plt.show()
+    logging.info(f"Mean PSNR for all trial images: {jnp.mean(store, axis=1)}")
+    logging.info(f"STD PSNR for all trial images: {jnp.std(store, axis=1)}")
 
 
 if __name__ == "__main__":
