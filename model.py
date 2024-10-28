@@ -3,7 +3,6 @@ import time
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import jax.profiler
 import jax.random as jr
 import scipy.spatial
 from absl import logging
@@ -18,11 +17,9 @@ class LatentMap(eqx.Module):
     positions: Int[Array, "n dim"]
     neighbor_map: Int[Array, "w h num_neighbors"]
     embeddings: Array
-    size: Int[Array, ""]
 
     def __init__(self, key, positions, image):
         positions = jnp.array(positions)
-        self.size = jnp.sum(jnp.any(jnp.isnan(positions), axis=-1))
         coords = make_mesh(image.max_shape())
 
         def kd_neighbors_callback(positions, coords):
@@ -49,20 +46,30 @@ class LatentMap(eqx.Module):
         self.positions = positions
         self.embeddings = jr.normal(key, (len(positions), 32)) * 1e-3
 
-    @jax.named_scope("LatentMap::call")
-    @jax.profiler.annotate_function
+    @jax.named_scope("LatentMap.check")
+    def check(self):
+        new_embeddings = eqx.error_if(
+            self.embeddings,
+            jnp.any(jnp.isnan(self.embeddings)),
+            "NaN in embeddings: should never be the case",
+        )
+        return eqx.tree_at(lambda s: s.embeddings, self, new_embeddings)
+
+    @jax.named_scope("LatentMap.call")
     def __call__(self, position: Float[Array, "2"]):
         int_pos = jnp.floor(position).astype(jnp.int32)
         neighbors = self.neighbor_map[int_pos[0], int_pos[1]]
         neighbors = eqx.error_if(
             neighbors, neighbors.sum() < 0, "Undefined neighbors: index out of bounds."
         )
-        distances = jnp.linalg.norm(self.positions[neighbors] - int_pos, axis=1)
+        distances = jax.lax.stop_gradient(
+            jnp.linalg.norm(self.positions[neighbors] - int_pos, axis=1)
+        )
 
         if True:  # this branch is "joost's method" - which does not make any sense to me
             latent = jnp.sum(distances[:, None] * self.embeddings[neighbors], axis=0)
         else:
-            weights = jax.lax.stop_gradient(1.0 / (distances + 1e-6))
+            weights = 1.0 / (distances + 1e-6)
             latent = jnp.sum(weights[:, None] * self.embeddings[neighbors], axis=0) / jnp.sum(
                 weights
             )
@@ -92,8 +99,19 @@ class MLP(eqx.Module):
         ]
         self.layers.append(eqx.nn.Linear(hidden_dims[-1], out_dim, key=keys[-1]))
 
-    @jax.named_scope("mlp::call")
-    @jax.profiler.annotate_function
+    @jax.named_scope("mlp.check")
+    def check(self):
+        def _check_layer(layer):
+            return eqx.error_if(
+                layer,
+                jnp.logical_or(jnp.any(jnp.isnan(layer.weight)), jnp.any(jnp.isnan(layer.bias))),
+                "NaN in weight or biases of the mlp: should never be the case",
+            )
+
+        new_layers = [_check_layer(layer) for layer in self.layers]
+        return eqx.tree_at(lambda s: s.layers, self, new_layers)
+
+    @jax.named_scope("mlp.call")
     def __call__(self, x: Float[Array, "latent_dim"]) -> Float[Array, "..."]:
         for layer in self.layers[:-1]:
             x = jax.nn.relu(layer(x))
@@ -115,8 +133,21 @@ class CombinedModel(eqx.Module):
         self.latent_map = latent_map
         self.mlp = mlp
 
-    @jax.named_scope("combined::call")
-    @jax.profiler.annotate_function
+    @jax.named_scope("combined.call")
     def __call__(self, x: Int[Array, "2"]) -> Float[Array, "..."]:
         latent = self.latent_map(x)
-        return jnp.clip(self.mlp(latent) * self.std + self.mu, 0, 1)
+        out = self.mlp(latent) * jax.lax.stop_gradient(self.std) + jax.lax.stop_gradient(self.mu)
+        return jax.lax.cond(
+            jnp.any(jnp.isnan(out)),
+            lambda: jax.lax.stop_gradient(self.mu),
+            lambda: jnp.clip(out, 0, 1),
+        )
+
+    def check(self):
+        # checks that all the weights that should not be nan are not nan
+        new_latent_map = self.latent_map.check()
+        new_mlp = self.mlp.check()
+        cls = self
+        cls = eqx.tree_at(lambda s: s.latent_map, cls, new_latent_map)
+        cls = eqx.tree_at(lambda s: s.mlp, cls, new_mlp)
+        return cls
