@@ -58,20 +58,23 @@ class Image(eqx.Module):
 def get_latent_points(key: PRNGKeyArray, image: Image, fraction: float = 0.05):
     w, h, c = image.data.shape
 
-    sobel_x = jnp.array([[1, 0, -1], [2, 0, -2], [1, 0, -1]])
-    sobel_y = jnp.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]])
+    # the following piece of code is somewhat weirdly written:
+    # the reason is that we wish to match kornia behaviour closely
+    # somehow it is very hard to achieve, but what i did at least matches statistics :)
+    sobel_x = jnp.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]) / 8.0
+    sobel_y = jnp.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]]) / 8.0
 
-    grad_x = jnp.sum(
-        jax.vmap(lambda i: convolve(i, sobel_x, mode="same"), in_axes=-1)(image.data), axis=0
-    )
-    grad_y = jnp.sum(
-        jax.vmap(lambda i: convolve(i, sobel_y, mode="same"), in_axes=-1)(image.data), axis=0
-    )
+    padded_image = jnp.pad(image.data, ((1, 1), (1, 1), (0, 0)), mode="edge")
+    grad_x = jax.vmap(lambda i: convolve(i, sobel_x, mode="valid"), in_axes=-1)(padded_image)
+    grad_x_sq = jnp.sum(grad_x**2, axis=0)
 
-    grad_magnitude = jnp.nan_to_num(jnp.sqrt(grad_x**2 + grad_y**2))
+    grad_y = jax.vmap(lambda i: convolve(i, sobel_y, mode="valid"), in_axes=-1)(padded_image)
+    grad_y_sq = jnp.sum(grad_y**2, axis=0)
+
+    grad_magnitude = jnp.nan_to_num(jnp.sqrt(grad_x_sq + grad_y_sq))
 
     x_grid, y_grid = jnp.meshgrid(jnp.arange(w), jnp.arange(h), indexing="ij")
-    grid = jnp.stack([x_grid, y_grid], axis=-1).reshape(-1, 2)
+    grid = jnp.stack([x_grid, x_grid], axis=-1).reshape(-1, 2)
 
     num_latents = image.max_latents()
     indices = jr.choice(
@@ -139,8 +142,6 @@ def train_image(image: Image, key: PRNGKeyArray, epochs: int = 1000) -> Combined
     optim = optax.adam(learning_rate=1e-3)
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
-    jax.debug.print("entering scan loop...")
-
     def scan_fn(carry, _):
         model, opt_state, local_key = carry
         sample_key, subkey = jr.split(local_key)
@@ -188,7 +189,7 @@ def main(argv):
     fn = eqx.Partial(train_image, epochs=1000)
 
     store = [[] for _ in images]
-    for key in jr.split(jr.key(0), 10):
+    for key in jr.split(jr.key(0), 1):
         for i, image in enumerate(images):
             model = fn(image, key)
             psnr = eval_image(model, image.data, viz="trial")

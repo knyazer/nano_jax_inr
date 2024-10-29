@@ -15,6 +15,7 @@ dependencies = [
     "jax-smi>=1.0.4",
     "jax[cuda12-pip]>=0.4.31",
     "jaxtyping>=0.2.34",
+    "kornia>=0.7.3",
     "matplotlib>=3.9.2",
     "optax>=0.2.3",
     "pandas>=2.2.3",
