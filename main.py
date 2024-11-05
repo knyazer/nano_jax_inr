@@ -23,6 +23,9 @@ flags.DEFINE_enum(
     "task", None, ["trial", "mnist", "imagenette"], "Type of the task to run.", required=True
 )
 
+flags.DEFINE_integer("epochs", 1000, "Number of epochs to train the model.")
+flags.DEFINE_integer("num_images", -1, "Number of images to train on, if -1 use all images.")
+
 mpl.use("TkAgg")
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")  # noqa
@@ -58,7 +61,7 @@ def trial_run():
     store = [[] for _ in images]
     for key in jr.split(jr.key(0), 10):
         for i, image in enumerate(images):
-            model = eqx.filter_jit(train_image)(image, key, epochs=1000)
+            model = eqx.filter_jit(train_image)(image, key, epochs=FLAGS.epochs)
             psnr = eval_image(model, image.data)
             logging.info("PSNR for trial image: %.2f", psnr)
             store[i].append(psnr)
@@ -69,13 +72,14 @@ def trial_run():
 
 
 def bench_dataset(dataset_name):
-    num_train_images = 10_000
-    logging.info(f"Loading {num_train_images} images...")
+    num_train_images = FLAGS.num_images
+    logging.info(f"Loading {num_train_images if num_train_images != -1 else 'all'} images...")
 
     if dataset_name == "mnist":
         mnist = fetch_openml("mnist_784", version=1, as_frame=False)
         mnist_images, mnist_labels = preprocess_mnist(mnist)
         batch_size = 128
+        num_train_images = num_train_images if num_train_images == -1 else len(mnist_images)
 
         # batch image objects
         data = []
@@ -105,7 +109,7 @@ def bench_dataset(dataset_name):
 
     logging.info("... done")
 
-    fn = eqx.Partial(train_image, epochs=1000)
+    fn = eqx.Partial(train_image, epochs=FLAGS.epochs)
 
     for i, image in tqdm(enumerate(data), total=len(data)):
         key = jr.key(i)
