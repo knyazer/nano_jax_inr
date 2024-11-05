@@ -16,6 +16,7 @@ dependencies = [
     "jax[cuda12-pip]>=0.4.31",
     "jaxtyping>=0.2.34",
     "matplotlib>=3.9.2",
+    "openml>=0.15.0",
     "optax>=0.2.3",
     "pandas>=2.2.3",
     "pillow>=11.0.0",

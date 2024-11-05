@@ -53,7 +53,7 @@ class LatentMap(eqx.Module):
             positions_stripped = positions[mask]
             tree = scipy.spatial.KDTree(positions_stripped)
             _, nearest_indices = tree.query(coords, k=4)
-            logging.info(f"spent {time.time() - t} seconds in kd callback")
+            logging.debug(f"spent {time.time() - t} seconds in kd callback")
             return nearest_indices.astype(jnp.int32)
 
         shape = jnp.broadcast_shapes((image.max_shape()[0] * image.max_shape()[1], 4))

@@ -83,6 +83,7 @@ def sample_pixels(
 
 
 @eqx.filter_jit
+@jax.named_scope("train_image")
 def train_image(image: Image, key: PRNGKeyArray, epochs: int = 1000) -> CombinedModel:
     """Trains an MLP model to represent a single image."""
     image_data = image.data

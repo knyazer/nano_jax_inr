@@ -7,14 +7,14 @@ MAX_DIM = 2048
 
 
 class Image(eqx.Module):
-    data: Float[Array, "maxd maxd c"]
-    shape: Int[Array, "2"]
+    data: Float[Array, "* maxd maxd c"]
+    shape: Int[Array, "* 2"]
     channels: int
     _max_shape: tuple
 
     def __init__(self, data, shape, channels, maxsize=None):
         self.data = data
-        self.shape = shape[:2]
+        self.shape = jnp.array(shape)[..., :2]
         self.channels = channels
 
         if maxsize is not None and maxsize == "auto":
