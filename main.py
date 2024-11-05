@@ -19,7 +19,9 @@ from train import train_image
 from utils import Image
 
 FLAGS = flags.FLAGS
-flags.DEFINE_enum("task", "trial", ["trial", "mnist", "imagenette"], "Type of the task to run.")
+flags.DEFINE_enum(
+    "task", None, ["trial", "mnist", "imagenette"], "Type of the task to run.", required=True
+)
 
 mpl.use("TkAgg")
 
@@ -125,8 +127,8 @@ def main(argv):
     elif FLAGS.task == "imagenette":
         bench_dataset("imagenette")
     else:
-        _msg = f"Task {FLAGS.task} not implemented."
-        raise NotImplementedError(_msg)
+        _msg = f"Task {FLAGS.task} not implemented. This is weird... ask knyazer about it"
+        logging.error(_msg)
 
 
 if __name__ == "__main__":
