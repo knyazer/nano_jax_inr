@@ -15,15 +15,12 @@ dependencies = [
     "jax-smi>=1.0.4",
     "jax[cuda12-pip]>=0.4.31",
     "jaxtyping>=0.2.34",
-    "kornia>=0.7.3",
     "matplotlib>=3.9.2",
     "optax>=0.2.3",
     "pandas>=2.2.3",
     "pillow>=11.0.0",
     "requests>=2.32.3",
     "scikit-learn>=1.5.2",
-    "tensorboard-plugin-profile>=2.17.0",
-    "tensorflow>=2.18.0",
     "tqdm>=4.66.5",
 ]
 
