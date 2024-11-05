@@ -15,6 +15,8 @@ def compute_psnr(
     true_image: Float[Array, "h w *"], pred_image: Float[Array, "h w *"]
 ) -> Float[Array, ""]:
     """Computes the Peak Signal-to-Noise Ratio (PSNR) between two images."""
+    true_image = jnp.clip(true_image, 0, 1)
+    pred_image = jnp.clip(pred_image, 0, 1)
     mse = jnp.mean((true_image - pred_image) ** 2)
     max_pixel = 1.0
     psnr = 20 * jnp.log10(max_pixel / jnp.sqrt(mse))

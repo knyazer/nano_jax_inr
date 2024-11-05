@@ -28,18 +28,18 @@ jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")  # noqa
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 
-MAX_DIM = 600
+MAX_DIM = 1024
 
 
 class Image(eqx.Module):
-    data: Float[Array, "2048 2048 c"]
+    data: Float[Array, "maxd maxd c"]
     shape: Int[Array, "2"]
     channels: int
     _max_shape: tuple
 
     def __init__(self, data, shape, channels, maxsize=None):
         self.data = data
-        self.shape = shape
+        self.shape = shape[:2]
         self.channels = channels
 
         if maxsize is not None:
@@ -60,7 +60,7 @@ def get_latent_points(key: PRNGKeyArray, image: Image, fraction: float = 0.05):
 
     # the following piece of code is somewhat weirdly written:
     # the reason is that we wish to match kornia behaviour closely
-    # somehow it is very hard to achieve, but what i did at least matches statistics :)
+    # somehow it is very hard to achieve, but what i did at least matches moments :)
     sobel_x = jnp.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]) / 8.0
     sobel_y = jnp.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]]) / 8.0
 
@@ -74,7 +74,7 @@ def get_latent_points(key: PRNGKeyArray, image: Image, fraction: float = 0.05):
     grad_magnitude = jnp.nan_to_num(jnp.sqrt(grad_x_sq + grad_y_sq))
 
     x_grid, y_grid = jnp.meshgrid(jnp.arange(w), jnp.arange(h), indexing="ij")
-    grid = jnp.stack([x_grid, x_grid], axis=-1).reshape(-1, 2)
+    grid = jnp.stack([x_grid, y_grid], axis=-1).reshape(-1, 2)
 
     num_latents = image.max_latents()
     indices = jr.choice(
@@ -117,7 +117,9 @@ def sample_pixels(
 ) -> tuple:
     w, h = image.shape
     W, H = image.max_shape()  # noqa
-    indices = jr.choice(key, W * H, shape=(int(min(W * H * fraction + 1, W * H)),), replace=False)
+    indices = jr.choice(
+        key, W * H, shape=(int(max(min(W * H * fraction, W * H), 1)),), replace=False
+    )
     coords = make_mesh((W, H))[indices]
     pixels = image.data[coords[:, 0], coords[:, 1], :]
     return coords, pixels
@@ -126,7 +128,6 @@ def sample_pixels(
 @eqx.filter_jit
 def train_image(image: Image, key: PRNGKeyArray, epochs: int = 1000) -> CombinedModel:
     """Trains an MLP model to represent a single image."""
-    jax.debug.print("entering train image...")
     image_data = image.data
     w, h = image.shape  # 'channels' is separate cuz it must be static
     c = image.channels
@@ -135,6 +136,7 @@ def train_image(image: Image, key: PRNGKeyArray, epochs: int = 1000) -> Combined
 
     mlp = MLP(32, [32], c, k1)
     latent_points = get_latent_points(k2, image, fraction=0.05)
+
     latent_map = LatentMap(k3, latent_points, image)
     model = CombinedModel(image_data, latent_map, mlp)
     model = model.check()
@@ -145,7 +147,7 @@ def train_image(image: Image, key: PRNGKeyArray, epochs: int = 1000) -> Combined
     def scan_fn(carry, _):
         model, opt_state, local_key = carry
         sample_key, subkey = jr.split(local_key)
-        batch_coords, batch_pixels = sample_pixels(image, subkey, fraction=0.5)
+        batch_coords, batch_pixels = sample_pixels(image, subkey, fraction=0.25)
         model, opt_state, loss = train_step(model, optim, opt_state, batch_coords, batch_pixels)
         model = model.check()
         return (model, opt_state, sample_key), loss
@@ -189,10 +191,10 @@ def main(argv):
     fn = eqx.Partial(train_image, epochs=1000)
 
     store = [[] for _ in images]
-    for key in jr.split(jr.key(0), 1):
+    for key in jr.split(jr.key(0), 10):
         for i, image in enumerate(images):
             model = fn(image, key)
-            psnr = eval_image(model, image.data, viz="trial")
+            psnr = eval_image(model, image.data)
             logging.info("PSNR for trial image: %.2f", psnr)
             store[i].append(psnr)
 

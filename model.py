@@ -28,9 +28,10 @@ def dists_normalise(dists):
     return dists
 
 
-def dists_nonlinear(dists):
+def dists_neurbf(dists):
     dists = dists / (dists.sum(axis=-1) + 1e-8)
-    return 1 - dists
+    dists = 1 - dists
+    return dists
 
 
 class LatentMap(eqx.Module):
@@ -65,7 +66,7 @@ class LatentMap(eqx.Module):
 
         self.neighbor_map = neighbor_map.astype(jnp.int32)
         self.positions = positions
-        self.embeddings = jr.normal(key, (len(positions), 32)) * 1e-3
+        self.embeddings = jr.uniform(key, (len(positions), 32), minval=-1e-4, maxval=1e-4)
 
         harmonics_range = jnp.array([2**-3, 2**12])
         harmonics = jnp.linspace(jnp.log2(harmonics_range[0]), jnp.log2(harmonics_range[1]), 32)
@@ -96,11 +97,11 @@ class LatentMap(eqx.Module):
             jnp.linalg.norm(self.positions[neighbors] - int_pos, axis=1)
         )
 
-        dist_fn = dists_nonlinear
+        dist_fn = dists_neurbf
         distances = dist_fn(distances)
 
         harmonized = distances[:, None] @ self.harmonics[None, :]
-        out = harmonized * latents
+        out = self.harm_function(harmonized) * latents
         return out.sum(axis=-2)
 
 
@@ -144,8 +145,8 @@ class CombinedModel(eqx.Module):
     std: Array
 
     def __init__(self, image, latent_map, mlp):
-        self.mu = jnp.nanmean(image, axis=(0, 1))
-        self.std = jnp.nanstd(image, axis=(0, 1))
+        self.mu = jnp.nanmean(image, axis=(0, 1)) * 0
+        self.std = jnp.nanstd(image, axis=(0, 1)) * 0 + 1
         self.latent_map = latent_map
         self.mlp = mlp
 
@@ -156,7 +157,7 @@ class CombinedModel(eqx.Module):
         return jax.lax.cond(
             jnp.any(jnp.isnan(out)),
             lambda: jax.lax.stop_gradient(self.mu),
-            lambda: jnp.clip(out, 0, 1),
+            lambda: out,
         )
 
     def check(self):
