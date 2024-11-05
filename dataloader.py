@@ -12,9 +12,9 @@ from tqdm import tqdm
 
 # Constants for dataset paths and URLs
 DATA_DIR = Path("data")
-IMAGENETTE_DIR = Path("data/imagenette2-320")
-IMAGENETTE_URL = "https://s3.amazonaws.com/fast-ai-imageclas/imagenette2-320.tgz"
-IMAGENETTE_TGZ = Path("imagenette2-320.tgz")
+IMAGENETTE_DIR = Path("data/imagenette2")
+IMAGENETTE_URL = "https://s3.amazonaws.com/fast-ai-imageclas/imagenette2.tgz"
+IMAGENETTE_TGZ = Path("imagenette2.tgz")
 
 
 def download_file(url: str, dest_path: Path) -> None:
@@ -66,14 +66,17 @@ def prepare_datasets() -> None:
 
 
 def preprocess_mnist(mnist_data: Any) -> tuple[np.ndarray, np.ndarray]:
-    """Preprocesses MNIST data."""
     X = mnist_data.data.astype(np.float32) / 255.0  # Normalize to [0,1]
     y = mnist_data.target.astype(np.int32)
     return X, y
 
 
 def load_imagenette_images() -> Generator[np.ndarray, None, None]:
-    """Loads Imagenette images as numpy arrays."""
+    if not IMAGENETTE_DIR.exists():
+        download_file(IMAGENETTE_URL, IMAGENETTE_TGZ)
+        extract_tar_gz(IMAGENETTE_TGZ, IMAGENETTE_DIR)
+    else:
+        logging.info("Imagenette dataset already exists at %s.", IMAGENETTE_DIR)
     for img_path in IMAGENETTE_DIR.rglob("*"):
         if img_path.suffix.lower() in {".jpg", ".jpeg", ".png"}:
             try:

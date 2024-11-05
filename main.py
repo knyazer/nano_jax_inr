@@ -71,18 +71,16 @@ def trial_run():
     logging.info(f"STD PSNR for all trial images: {jnp.std(store, axis=1)}")
 
 
-def bench_dataset(dataset_name):
-    num_train_images = FLAGS.num_images
-    logging.info(f"Loading {num_train_images if num_train_images != -1 else 'all'} images...")
+def data_loader(dataset_name, batch_size):
+    num_images = FLAGS.num_images
+    logging.info(f"Loading {num_images if num_images != -1 else 'all'} images...")
 
     if dataset_name == "mnist":
         mnist = fetch_openml("mnist_784", version=1, as_frame=False)
         mnist_images, mnist_labels = preprocess_mnist(mnist)
-        batch_size = 128
-        num_train_images = num_train_images if num_train_images == -1 else len(mnist_images)
+        num_train_images = len(mnist_images) if num_images == -1 else num_images
 
         # batch image objects
-        data = []
         for chunk_idx in range(0, num_train_images, batch_size):
             batch_images = []
             for idx in range(chunk_idx, min(chunk_idx + batch_size, num_train_images)):
@@ -102,20 +100,111 @@ def bench_dataset(dataset_name):
             assert stacked_shape.shape[0] == stacked_data.shape[0]
 
             image_soa = Image(data=stacked_data, shape=stacked_shape, channels=1, maxsize=(28, 28))
-            data.append(image_soa)
+            yield image_soa
+
+    elif dataset_name == "imagenette":
+        # the strategy is: preload a bs * 20 images, sort the images by one of dims;
+        # assign batch sizes as either batch_size or batch_size / 4 based on the size
+        def sorted_image_gen():
+            cnt = 0
+            done = False
+            imagenette = load_imagenette_images()
+            while (cnt := cnt + 1) < num_images:
+                images = []
+                for _ in range(50 * batch_size):
+                    try:
+                        image_data = next(imagenette)
+                    except StopIteration:
+                        done = True
+                        break
+                    image_data = jnp.array(image_data)
+                    images.append(image_data)
+                images = sorted(images, key=lambda x: x.shape[0] * x.shape[1])
+
+                yield from images
+                del images
+
+                if done:
+                    break
+
+        def batched_sorted_image_gen():
+            # load images, if image is smaller than 1000x1000 batch it with batch_size other images,
+            # otherwise batch it with batch_size / 4 other images
+            generator = sorted_image_gen()
+
+            while True:
+                normal_batch = []
+                small_batch = False
+                max_h = 0
+                max_w = 0
+                for _ in range(batch_size):
+                    normal_batch.append(next(generator))
+                    max_w = max(max_w, normal_batch[-1].shape[0])
+                    max_h = max(max_h, normal_batch[-1].shape[1])
+
+                small_batch = max_w > 1000 and max_h > 1000
+
+                if small_batch:
+                    for chunk_start in range(0, len(normal_batch), batch_size // 4):
+                        yield (
+                            normal_batch[chunk_start : chunk_start + batch_size // 4],
+                            (max_w, max_h),
+                        )
+                else:
+                    yield normal_batch, (max_w, max_h)
+                del normal_batch
+
+        num_images = num_images if num_images != -1 else 100_000_000
+        for image_batch, max_sz in batched_sorted_image_gen():
+            batch_images = []
+            for raw_image_data in image_batch:
+                image_data = jnp.array(raw_image_data)
+                image = Image(
+                    data=image_data,
+                    shape=image_data.shape,
+                    channels=3,
+                    maxsize=max_sz,
+                )
+                batch_images.append(image)
+
+            stacked_data = jnp.stack([image.data for image in batch_images])
+            stacked_shape = jnp.stack([image.shape for image in batch_images])
+            del batch_images
+
+            assert stacked_shape.shape[0] == stacked_data.shape[0]
+
+            image_soa = Image(data=stacked_data, shape=stacked_shape, channels=3).shrink_to_grid()
+            yield image_soa
+
     else:
         _msg = f"Dataset {dataset_name} not implemented."
         raise NotImplementedError(_msg)
+
+
+def bench_dataset(dataset_name):
+    total = 0
+    batch_size = 2
+    if dataset_name == "mnist":
+        total = 60000
+        batch_size = 128
+    elif dataset_name == "imagenette":
+        total = 14000  # TODO
+        batch_size = 4
+
+    datagen = data_loader(dataset_name, batch_size)
 
     logging.info("... done")
 
     fn = eqx.Partial(train_image, epochs=FLAGS.epochs)
 
-    for i, image in tqdm(enumerate(data), total=len(data)):
-        key = jr.key(i)
+    idx = 0
+    for image in tqdm(datagen, total=total // batch_size):
+        key = jr.key(idx := idx + 1)
+        logging.info("Training...")
         model = eqx.filter_vmap(fn)(image, jr.split(key, len(image.shape)))
+        logging.info("... done; evaluating...")
         psnr = eqx.filter_vmap(eval_image)(model, image)
-        logging.info("PSNR for trial image: %.2f +- %.2f", float(psnr.mean()), float(psnr.std()))
+        logging.info("Batch PSNR: %.2f +- %.2f", float(psnr.mean()), float(psnr.std()))
 
 
 def main(argv):
