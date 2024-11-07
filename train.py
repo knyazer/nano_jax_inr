@@ -123,6 +123,7 @@ def train_image(image: Image, key: PRNGKeyArray, epochs: int = 1000) -> Combined
         model, opt_state, local_key = carry
         sample_key, subkey = jr.split(local_key)
         batch_coords, batch_pixels = sample_pixels(image, subkey, fraction=0.25)
+        breakpoint()
         batch_coords = eqx.filter_shard(batch_coords, sharding)
         batch_pixels = eqx.filter_shard(batch_pixels, sharding)
         model, opt_state, loss = train_step(model, optim, opt_state, batch_coords, batch_pixels)
