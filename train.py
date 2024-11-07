@@ -82,7 +82,7 @@ def sample_pixels(
 ) -> tuple:
     w, h = image.shape
     W, H = image.max_shape()  # noqa
-    sz = int(max(min(W * H * fraction, W * H), 1))
+    sz = min(int(max(min(W * H * fraction, W * H), 1)), 100_000)
     n_devices = jax.device_count()
     sz = (sz // n_devices) * n_devices
     indices = jr.choice(key, W * H, shape=(sz,), replace=False)

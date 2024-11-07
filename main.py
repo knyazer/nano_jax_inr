@@ -130,7 +130,7 @@ def data_loader(dataset_name, batch_size, num_devices=1):
                         break
                     image_data = jnp.array(image_data)
                     images.append(image_data)
-                images = sorted(images, key=lambda x: x.shape[0] * x.shape[1])
+                images = sorted(images, key=lambda x: -x.shape[0] * x.shape[1])
 
                 yield from images
                 del images
