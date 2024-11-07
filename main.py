@@ -8,6 +8,8 @@ import jax.numpy as jnp
 import jax.profiler
 import jax.random as jr
 from absl import app, flags, logging
+from jax.sharding import NamedSharding
+from jax.sharding import PartitionSpec as P  # noqa
 from jax_smi import initialise_tracking
 from sklearn.datasets import fetch_openml
 from tqdm import tqdm
@@ -36,6 +38,7 @@ except Exception as e:
     print(f"Error importing matplotlib, plotting will not work. {e!s}")
 
 
+jax.config.update("jax_threefry_partitionable", True)  # noqa
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")  # noqa
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
@@ -204,11 +207,16 @@ def bench_dataset(dataset_name):
 
     fn = eqx.filter_jit(eqx.filter_vmap(eqx.Partial(train_image, epochs=FLAGS.epochs)))
 
-    idx = 0
-    for image_batch in tqdm(datagen, total=total // batch_size):
-        key = jr.key(idx := idx + 1)
+    num_devices = jax.device_count()
+    batch_size *= num_devices
+    mesh = jax.make_mesh((num_devices, 1), ("batch", "rest"))
 
+    idx = 0
+    for image_batch_raw in tqdm(datagen, total=total // batch_size):
+        key = jr.key(idx := idx + 1)
         logging.info("Training...")
+        sharded_data = jax.device_put(image_batch_raw.data, NamedSharding(mesh, P("batch")))
+        image_batch = eqx.tree_at(lambda x: x.data, image_batch_raw, sharded_data)
         model = fn(image_batch, jr.split(key, batch_size))
         logging.info("... done; evaluating...")
         psnr = eqx.filter_vmap(eval_image)(model, image_batch)
