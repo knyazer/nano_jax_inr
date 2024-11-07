@@ -218,6 +218,7 @@ def bench_dataset(dataset_name):
         image_sharded = eqx.filter_shard(image_batch, sharding)
 
         dynamic, static = eqx.partition(image_sharded, eqx.is_inexact_array)  # only 'data'
+        breakpoint()
         dynamic = jax.lax.with_sharding_constraint(dynamic, sharding)
         image_sharded = eqx.combine(dynamic, static)  # rebuild
 
