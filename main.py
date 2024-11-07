@@ -121,7 +121,7 @@ def data_loader(dataset_name, batch_size, num_devices=1):
             imagenette = load_imagenette_images()
             while (cnt := cnt + 1) < num_images:
                 images = []
-                for _ in range(100 * batch_size):
+                for _ in range(10 * batch_size):
                     try:
                         image_data = next(imagenette)
                     except StopIteration:
@@ -196,20 +196,19 @@ def bench_dataset(dataset_name):
     batch_size = 2
     if dataset_name == "mnist":
         total = 60000
-        batch_size = 512
+        batch_size = 64
     elif dataset_name == "imagenette":
         total = 14000  # TODO
-        batch_size = 64
+        batch_size = 1
+
+    num_devices = jax.device_count()
+    batch_size = batch_size * num_devices
+    devices = mesh_utils.create_device_mesh((num_devices, 1, 1, 1))
+    sharding = jshard.PositionalSharding(devices)
 
     datagen = data_loader(dataset_name, batch_size)
 
-    logging.info("... done")
-
     fn = eqx.Partial(train_image, epochs=FLAGS.epochs)
-
-    num_devices = jax.device_count()
-    devices = mesh_utils.create_device_mesh((num_devices, 1, 1, 1))
-    sharding = jshard.PositionalSharding(devices)
 
     idx = 0
     for image_batch in tqdm(datagen, total=total // batch_size):
