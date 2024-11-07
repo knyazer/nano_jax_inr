@@ -81,7 +81,7 @@ def trial_run():
     logging.info(f"STD PSNR for all trial images: {jnp.std(store, axis=1)}")
 
 
-def data_loader(dataset_name, batch_size):
+def data_loader(dataset_name, batch_size, num_devices=1):
     num_images = FLAGS.num_images
     logging.info(f"Loading {num_images if num_images != -1 else 'all'} images...")
 
@@ -208,9 +208,8 @@ def bench_dataset(dataset_name):
     fn = eqx.Partial(train_image, epochs=FLAGS.epochs)
 
     num_devices = jax.device_count()
-    devices = mesh_utils.create_device_mesh((1, num_devices))
+    devices = mesh_utils.create_device_mesh((num_devices,))
     sharding = jshard.PositionalSharding(devices)
-    replicated = sharding.replicate()
 
     idx = 0
     for image_batch in tqdm(datagen, total=total // batch_size):
