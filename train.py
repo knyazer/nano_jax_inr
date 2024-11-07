@@ -34,17 +34,19 @@ def get_latent_points(key: PRNGKeyArray, image: Image, fraction: float = 0.05):
     grid = jnp.stack([x_grid, y_grid], axis=-1).reshape(-1, 2)
 
     limit_num_latents = image.max_latents()
-    num_latents = image.shape[0] * image.shape[1] * fraction
+    num_latents = (image.shape[0] * image.shape[1] * fraction).astype(jnp.int32)
     probs = grad_magnitude.reshape(-1)
     probs = eqx.error_if(
-        probs, jnp.count_nonzero(probs) > num_latents, "Not enough pixels to sample"
+        probs, jnp.count_nonzero(probs) < num_latents, "Not enough pixels to sample"
     )
     probs = eqx.error_if(
         probs, limit_num_latents < num_latents, "The number to sample is higher than the limit"
     )
 
     indices = jr.choice(key, grid, shape=(limit_num_latents,), p=probs, replace=False)
-    indices = jnp.where((jnp.arange(num_latents) < num_latents)[:, None].repeat(2, 1), indices, -1)
+    indices = jnp.where(
+        (jnp.arange(limit_num_latents) < num_latents)[:, None].repeat(2, 1), indices, -1
+    )
     return indices.astype(jnp.int32)
 
 

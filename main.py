@@ -129,7 +129,7 @@ def data_loader(dataset_name, batch_size, num_devices=1):
                         break
                     image_data = jnp.array(image_data)
                     images.append(image_data)
-                images = sorted(images, key=lambda x: x.shape[0] * x.shape[1])
+                images = sorted(images, key=lambda x: -x.shape[0] * x.shape[1])
 
                 yield from images
                 del images
@@ -154,14 +154,15 @@ def data_loader(dataset_name, batch_size, num_devices=1):
 
                 small_batch = max_w > 1000 and max_h > 1000
 
-                if small_batch:
-                    for chunk_start in range(0, len(normal_batch), batch_size // 4):
-                        yield (
-                            normal_batch[chunk_start : chunk_start + batch_size // 4],
-                            (max_w, max_h),
-                        )
-                else:
-                    yield normal_batch, (max_w, max_h)
+                # if small_batch:
+                #     for chunk_start in range(0, len(normal_batch), batch_size // 4):
+                #         yield (
+                #             normal_batch[chunk_start : chunk_start + batch_size // 4],
+                #             (max_w, max_h),
+                #         )
+                # else:
+                #     yield normal_batch, (max_w, max_h)
+                yield normal_batch, (max_w, max_h)
                 del normal_batch
 
         num_images = num_images if num_images != -1 else 100_000_000

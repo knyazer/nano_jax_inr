@@ -55,7 +55,7 @@ class Image(eqx.Module):
 
         # figure out max shape
         if maxsize == "auto":
-            if self.shape.size == 2:
+            if self.shape.size == 2 and self.shape.ndim == 1:
                 self._max_shape = (int(self.shape[0]), int(self.shape[1]))
             else:
                 # max size is the maximum of the shape
@@ -67,7 +67,7 @@ class Image(eqx.Module):
             self._max_shape = maxsize  # type: ignore
 
         # figure out whether we need to pad the image data
-        if self.shape.size == 2:
+        if self.shape.size == 2 and self.shape.ndim == 1:
             placeholder = jnp.full((*self.max_shape(), channels), jnp.nan)
             w, h = self.shape
             placeholder = placeholder.at[:w, :h, :].set(data)
@@ -89,7 +89,6 @@ class Image(eqx.Module):
         with jax.ensure_compile_time_eval():
             # given that we are storing an array of shapes
             assert len(self.shape.shape) == 2
-            assert self.shape.shape[0] >= 2
             # we are going to shrink the image to the maximum shape
             new_max_shape = self.shape.max(axis=0)
             new_image = Image(
@@ -104,7 +103,6 @@ class Image(eqx.Module):
         # shrinks to the smallest grid size that is larger than max size
         with jax.ensure_compile_time_eval():
             assert len(self.shape.shape) == 2
-            assert self.shape.shape[0] >= 2
             new_max_shape = self.shape.max(axis=0)
             new_max_shape = (int(new_max_shape[0]), int(new_max_shape[1]))
             original_shape = new_max_shape
