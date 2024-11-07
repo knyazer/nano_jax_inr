@@ -203,13 +203,13 @@ def bench_dataset(dataset_name):
         total = 14000  # TODO
         batch_size = 1
 
+    num_devices = jax.device_count()
+    mesh = jax.make_mesh((num_devices, 1), ("batch", "rest"))
+    batch_size *= num_devices
+
     datagen = data_loader(dataset_name, batch_size)
 
     fn = eqx.filter_jit(eqx.filter_vmap(eqx.Partial(train_image, epochs=FLAGS.epochs)))
-
-    num_devices = jax.device_count()
-    batch_size *= num_devices
-    mesh = jax.make_mesh((num_devices, 1), ("batch", "rest"))
 
     idx = 0
     for image_batch_raw in tqdm(datagen, total=total // batch_size):
