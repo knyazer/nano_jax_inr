@@ -91,8 +91,7 @@ class Image(eqx.Module):
         return self._max_shape
 
     def max_latents(self):
-        n_devices = jax.device_count()
-        return (int(self.max_shape()[0] * self.max_shape()[1] * 0.05) // n_devices) * n_devices
+        return int(self.max_shape()[0] * self.max_shape()[1] * 0.05)
 
     def shrink(self):
         with jax.ensure_compile_time_eval():
