@@ -32,6 +32,7 @@ flags.DEFINE_integer("num_images", -1, "Number of images to train on, if -1 use 
 try:
     import matplotlib as mpl
     import matplotlib.pyplot as plt
+
     mpl.use("TkAgg")
 except Exception as e:
     print(f"Error importing matplotlib, plotting will not work. {e!s}")
@@ -206,7 +207,7 @@ def bench_dataset(dataset_name):
 
     fn = eqx.Partial(train_image, epochs=FLAGS.epochs)
 
-    devices = mesh_utils.create_device_mesh((1, jax.device_count(), 1))
+    devices = mesh_utils.create_device_mesh((1, jax.device_count(), 1, 1))
     sharding = jshard.PositionalSharding(devices)
     replicated = sharding.replicate()
 
