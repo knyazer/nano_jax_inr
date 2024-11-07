@@ -208,7 +208,7 @@ def bench_dataset(dataset_name):
     fn = eqx.Partial(train_image, epochs=FLAGS.epochs)
 
     num_devices = jax.device_count()
-    devices = mesh_utils.create_device_mesh((num_devices,))
+    devices = mesh_utils.create_device_mesh((num_devices, 1, 1, 1))
     sharding = jshard.PositionalSharding(devices)
 
     idx = 0
