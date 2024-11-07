@@ -7,9 +7,12 @@ import jax
 import jax.numpy as jnp
 import jax.profiler
 import jax.random as jr
+import jax.sharding as jshard
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from absl import app, flags, logging
+from jax.experimental import mesh_utils
+from jax_smi import initialise_tracking
 from sklearn.datasets import fetch_openml
 from tqdm import tqdm
 
@@ -17,6 +20,8 @@ from dataloader import load_imagenette_images, preprocess_mnist
 from evaluation import eval_image
 from train import train_image
 from utils import Image
+
+initialise_tracking()
 
 FLAGS = flags.FLAGS
 flags.DEFINE_enum(
@@ -111,7 +116,7 @@ def data_loader(dataset_name, batch_size):
             imagenette = load_imagenette_images()
             while (cnt := cnt + 1) < num_images:
                 images = []
-                for _ in range(50 * batch_size):
+                for _ in range(100 * batch_size):
                     try:
                         image_data = next(imagenette)
                     except StopIteration:
@@ -197,13 +202,18 @@ def bench_dataset(dataset_name):
 
     fn = eqx.Partial(train_image, epochs=FLAGS.epochs)
 
+    devices = mesh_utils.create_device_mesh((1, jax.device_count(), 1))
+    sharding = jshard.PositionalSharding(devices)
+    replicated = sharding.replicate()
+
     idx = 0
-    for image in tqdm(datagen, total=total // batch_size):
+    for image_batch in tqdm(datagen, total=total // batch_size):
         key = jr.key(idx := idx + 1)
         logging.info("Training...")
-        model = eqx.filter_vmap(fn)(image, jr.split(key, len(image.shape)))
+        image_sharded = eqx.filter_shard(image_batch, sharding)
+        model = eqx.filter_vmap(fn)(image_sharded, jr.split(key, image_sharded.shape.shape[0]))
         logging.info("... done; evaluating...")
-        psnr = eqx.filter_vmap(eval_image)(model, image)
+        psnr = eqx.filter_vmap(eval_image)(model, image_sharded)
         logging.info("Batch PSNR: %.2f +- %.2f", float(psnr.mean()), float(psnr.std()))
 
 
@@ -211,7 +221,10 @@ def main(argv):
     del argv  # Unused.
     # Configure absl logging
     logging.get_absl_handler().python_handler.stream = sys.stdout
-    logging.set_verbosity(logging.INFO)
+    if jax.process_index() == 0:
+        logging.set_verbosity(logging.INFO)
+    else:
+        logging.set_verbosity(logging.ERROR)
 
     if FLAGS.task == "trial":
         trial_run()
@@ -220,7 +233,7 @@ def main(argv):
     elif FLAGS.task == "imagenette":
         bench_dataset("imagenette")
     else:
-        _msg = f"Task {FLAGS.task} not implemented. This is weird... ask knyazer about it"
+        _msg = f"Task {FLAGS.task} not implemented. This is... weird. Ask knyazer about it"
         logging.error(_msg)
 
 
