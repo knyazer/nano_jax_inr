@@ -199,7 +199,7 @@ def bench_dataset(dataset_name):
         batch_size = 512
     elif dataset_name == "imagenette":
         total = 14000  # TODO
-        batch_size = 4
+        batch_size = 64
 
     datagen = data_loader(dataset_name, batch_size)
 
