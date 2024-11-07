@@ -196,7 +196,7 @@ def bench_dataset(dataset_name):
     batch_size = 2
     if dataset_name == "mnist":
         total = 60000
-        batch_size = 128
+        batch_size = 512
     elif dataset_name == "imagenette":
         total = 14000  # TODO
         batch_size = 4
