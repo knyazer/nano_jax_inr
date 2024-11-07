@@ -87,7 +87,7 @@ def sample_pixels(
     sz = int(max(min(W * H * fraction, W * H), 1))
     n_devices = jax.device_count()
     sz = (sz // n_devices) * n_devices
-    indices = jr.choice(key, W * H, shape=(n_devices,), replace=False)
+    indices = jr.choice(key, W * H, shape=(sz,), replace=False)
     coords = make_mesh((W, H))[indices]
     pixels = image.data[coords[:, 0], coords[:, 1], :]
     return coords, pixels
@@ -124,7 +124,6 @@ def train_image(image: Image, key: PRNGKeyArray, epochs: int = 1000) -> Combined
         model, opt_state, local_key = carry
         sample_key, subkey = jr.split(local_key)
         batch_coords, batch_pixels = sample_pixels(image, subkey, fraction=0.25)
-        breakpoint()
         batch_coords = eqx.filter_shard(batch_coords, sharding)
         batch_pixels = eqx.filter_shard(batch_pixels, sharding)
         model, opt_state, loss = train_step(model, optim, opt_state, batch_coords, batch_pixels)
