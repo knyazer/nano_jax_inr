@@ -8,8 +8,6 @@ import jax.numpy as jnp
 import jax.profiler
 import jax.random as jr
 import jax.sharding as jshard
-import matplotlib as mpl
-import matplotlib.pyplot as plt
 from absl import app, flags, logging
 from jax.experimental import mesh_utils
 from jax_smi import initialise_tracking
@@ -31,7 +29,13 @@ flags.DEFINE_enum(
 flags.DEFINE_integer("epochs", 1000, "Number of epochs to train the model.")
 flags.DEFINE_integer("num_images", -1, "Number of images to train on, if -1 use all images.")
 
-mpl.use("TkAgg")
+try:
+    import matplotlib as mpl
+    import matplotlib.pyplot as plt
+    mpl.use("TkAgg")
+except Exception as e:
+    print(f"Error importing matplotlib, plotting will not work. {e!s}")
+
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")  # noqa
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
