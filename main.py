@@ -1,5 +1,6 @@
 import os
 import sys
+from concurrent import futures
 from pathlib import Path
 
 import equinox as eqx
@@ -209,7 +210,22 @@ def bench_dataset(dataset_name):
 
     datagen = data_loader(dataset_name, batch_size)
 
-    fn = eqx.Partial(train_image, epochs=FLAGS.epochs)
+    fn = eqx.filter_jit(eqx.filter_vmap(eqx.Partial(train_image, epochs=FLAGS.epochs)))
+
+    compiled = {}
+    if dataset_name == "imagenette":
+        with futures.ThreadPoolExecutor() as pool:
+            fake_image_gen = Image.fake_stacked_grid_generator(batch_size)
+            for fake in fake_image_gen:
+                dynamic, static = eqx.partition(fake, eqx.is_inexact_array)  # only 'data'
+                dynamic = jax.lax.with_sharding_constraint(dynamic, sharding)
+                sharded_fake = eqx.combine(dynamic, static)  # rebuild
+                logging.info(f"Compiling {fake}...")
+
+                lowered = fn.lower(sharded_fake, jr.split(jr.key(0), batch_size))  # type: ignore
+                compiled[fake.data.shape[1:3]] = pool.submit(lowered.compile)
+        compiled = {k: v.result() for k, v in compiled.items()}
+        breakpoint()
 
     idx = 0
     for image_batch in tqdm(datagen, total=total // batch_size):
@@ -220,7 +236,8 @@ def bench_dataset(dataset_name):
         dynamic = jax.lax.with_sharding_constraint(dynamic, sharding)
         image_sharded = eqx.combine(dynamic, static)  # rebuild
 
-        model = eqx.filter_vmap(fn)(image_sharded, jr.split(key, image_sharded.shape.shape[0]))
+        compiled_fn = compiled.get(tuple(image_batch.shape[1:3]), fn)
+        model = compiled_fn(image_sharded, jr.split(key, image_sharded.batch_size))
         logging.info("... done; evaluating...")
         psnr = eqx.filter_vmap(eval_image)(model, image_sharded)
         logging.info("Batch PSNR: %.2f +- %.2f", float(psnr.mean()), float(psnr.std()))

@@ -13,6 +13,7 @@ MAX_DIM = 5000
 # The point is to reduce compilation time, while simultaneously allowing for
 # use of batching on the images, if they are small
 _grid_size_distr = [
+    150,
     224,
     250,
     300,
@@ -25,18 +26,18 @@ _grid_size_distr = [
     700,
     800,
     1000,
-    1300,
-    1600,
-    2048,
-    5000,
+    1500,
+    2000,
 ]
 
 
 def _generate_grid():
     g = []
     for w in _grid_size_distr:
-        for h in _grid_size_distr[::2]:
-            g.append((w, h))
+        for h in _grid_size_distr:
+            if w / h < 2.5 and h / w < 2.5:
+                g.append((w, h))
+    g.append((MAX_DIM, MAX_DIM))
     return g
 
 
@@ -48,6 +49,13 @@ class Image(eqx.Module):
     shape: Int[Array, "* 2"]
     channels: int
     _max_shape: tuple
+
+    @staticmethod
+    def fake_stacked_grid_generator(batch_size: int, channels=3):
+        shape = jnp.zeros((batch_size, 2))
+        for maxsize in _GRID:
+            data_shape = (batch_size, *maxsize, channels)
+            yield Image(jnp.zeros(data_shape), shape, channels, maxsize=maxsize)
 
     def __init__(self, data, shape, channels, maxsize: str | tuple = "auto"):
         self.shape = jnp.array(shape)[..., :2]
