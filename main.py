@@ -1,6 +1,5 @@
 import os
 import sys
-from concurrent import futures
 from pathlib import Path
 
 import equinox as eqx
@@ -8,9 +7,7 @@ import jax
 import jax.numpy as jnp
 import jax.profiler
 import jax.random as jr
-import jax.sharding as jshard
 from absl import app, flags, logging
-from jax.experimental import mesh_utils
 from jax_smi import initialise_tracking
 from sklearn.datasets import fetch_openml
 from tqdm import tqdm
@@ -203,44 +200,19 @@ def bench_dataset(dataset_name):
         total = 14000  # TODO
         batch_size = 1
 
-    num_devices = jax.device_count()
-    batch_size = batch_size * num_devices
-    devices = mesh_utils.create_device_mesh((num_devices, 1, 1, 1))
-    sharding = jshard.PositionalSharding(devices)
-
     datagen = data_loader(dataset_name, batch_size)
 
     fn = eqx.filter_jit(eqx.filter_vmap(eqx.Partial(train_image, epochs=FLAGS.epochs)))
 
-    compiled = {}
-    if dataset_name == "imagenette":
-        with futures.ThreadPoolExecutor() as pool:
-            fake_image_gen = Image.fake_stacked_grid_generator(batch_size)
-            for fake in fake_image_gen:
-                dynamic, static = eqx.partition(fake, eqx.is_inexact_array)  # only 'data'
-                dynamic = jax.lax.with_sharding_constraint(dynamic, sharding)
-                sharded_fake = eqx.combine(dynamic, static)  # rebuild
-                logging.info(f"Compiling {fake}...")
-
-                lowered = fn.lower(sharded_fake, jr.split(jr.key(0), batch_size))  # type: ignore
-                compiled[fake.data.shape[1:3]] = pool.submit(lowered.compile)
-        compiled = {k: v.result() for k, v in compiled.items()}
-        breakpoint()
-
     idx = 0
     for image_batch in tqdm(datagen, total=total // batch_size):
         key = jr.key(idx := idx + 1)
+
         logging.info("Training...")
-
-        dynamic, static = eqx.partition(image_batch, eqx.is_inexact_array)  # only 'data'
-        dynamic = jax.lax.with_sharding_constraint(dynamic, sharding)
-        image_sharded = eqx.combine(dynamic, static)  # rebuild
-
-        compiled_fn = compiled.get(tuple(image_batch.shape[1:3]), fn)
-        model = compiled_fn(image_sharded, jr.split(key, image_sharded.batch_size))
+        model = fn(image_batch, jr.split(key, batch_size))
         logging.info("... done; evaluating...")
-        psnr = eqx.filter_vmap(eval_image)(model, image_sharded)
-        logging.info("Batch PSNR: %.2f +- %.2f", float(psnr.mean()), float(psnr.std()))
+        psnr = eqx.filter_vmap(eval_image)(model, image_batch)
+        logging.info("... done; Batch PSNR is %.2f +- %.2f", float(psnr.mean()), float(psnr.std()))
 
 
 def main(argv):
