@@ -81,6 +81,9 @@ def trial_run():
     logging.info(f"STD PSNR for all trial images: {jnp.std(store, axis=1)}")
 
 
+SKIPPED = 0
+
+
 def data_loader(dataset_name, batch_size, num_devices=1):
     num_images = FLAGS.num_images
     logging.info(f"Loading {num_images if num_images != -1 else 'all'} images...")
@@ -124,6 +127,11 @@ def data_loader(dataset_name, batch_size, num_devices=1):
                 for _ in range(10 * batch_size):
                     try:
                         image_data = next(imagenette)
+                        if image_data.shape[0] > 1500 or image_data.shape[1] > 1500:
+                            global SKIPPED
+                            SKIPPED += 1
+                            logging.info(f"Skipping large image; total number skipped: {SKIPPED}")
+                            continue
                     except StopIteration:
                         done = True
                         break
@@ -199,7 +207,7 @@ def bench_dataset(dataset_name):
         total = 60000
         batch_size = 64
     elif dataset_name == "imagenette":
-        total = 14000  # TODO
+        total = 14000  # ish
         batch_size = 1
 
     num_devices = jax.device_count()

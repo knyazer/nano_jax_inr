@@ -13,7 +13,7 @@ MAX_DIM = 5000
 # The point is to reduce compilation time, while simultaneously allowing for
 # use of batching on the images, if they are small
 _grid_size_distr = [
-    224,
+    200,
     250,
     300,
     350,
@@ -26,7 +26,7 @@ _grid_size_distr = [
     800,
     1000,
     1300,
-    1600,
+    1500,
     2048,
     5000,
 ]
