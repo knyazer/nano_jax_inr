@@ -216,6 +216,11 @@ def bench_dataset(dataset_name):
         key = jr.key(idx := idx + 1)
         logging.info("Training...")
         image_sharded = eqx.filter_shard(image_batch, sharding)
+
+        dynamic, static = eqx.partition(image_sharded, eqx.is_inexact_array)  # only 'data'
+        dynamic = jax.lax.with_sharding_constraint(dynamic, sharding)
+        image_sharded = eqx.combine(dynamic, static)  # rebuild
+
         model = eqx.filter_vmap(fn)(image_sharded, jr.split(key, image_sharded.shape.shape[0]))
         logging.info("... done; evaluating...")
         psnr = eqx.filter_vmap(eval_image)(model, image_sharded)
