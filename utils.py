@@ -52,7 +52,7 @@ class Image(eqx.Module):
 
     @staticmethod
     def fake_stacked_grid_generator(batch_size: int, channels=3):
-        shape = jnp.zeros((batch_size, 2)).astype(jnp.int32)
+        shape = jnp.zeros((batch_size, 2))
         for maxsize in _GRID:
             data_shape = (batch_size, *maxsize, channels)
             yield Image(jnp.zeros(data_shape), shape, channels, maxsize=maxsize)
