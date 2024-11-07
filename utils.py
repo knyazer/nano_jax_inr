@@ -35,7 +35,7 @@ def _generate_grid():
     g = []
     for w in _grid_size_distr:
         for h in _grid_size_distr:
-            if w == h:  # w / h < 2.5 and h / w < 2.5:
+            if w / h < 2.5 and h / w < 2.5:
                 g.append((w, h))
     g.append((MAX_DIM, MAX_DIM))
     return g
