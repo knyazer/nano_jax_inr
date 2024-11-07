@@ -208,17 +208,15 @@ def bench_dataset(dataset_name):
     fn = eqx.Partial(train_image, epochs=FLAGS.epochs)
 
     num_devices = jax.device_count()
-    devices = mesh_utils.create_device_mesh((num_devices, 1))
+    devices = mesh_utils.create_device_mesh((num_devices, 1, 1, 1))
     sharding = jshard.PositionalSharding(devices)
 
     idx = 0
     for image_batch in tqdm(datagen, total=total // batch_size):
         key = jr.key(idx := idx + 1)
         logging.info("Training...")
-        image_sharded = eqx.filter_shard(image_batch, sharding)
 
-        dynamic, static = eqx.partition(image_sharded, eqx.is_inexact_array)  # only 'data'
-        breakpoint()
+        dynamic, static = eqx.partition(image_batch, eqx.is_inexact_array)  # only 'data'
         dynamic = jax.lax.with_sharding_constraint(dynamic, sharding)
         image_sharded = eqx.combine(dynamic, static)  # rebuild
 
