@@ -3,9 +3,7 @@ import jax
 import jax.numpy as jnp
 import jax.profiler
 import jax.random as jr
-import jax.sharding as jshard
 import optax
-from jax.experimental import mesh_utils
 from jax.scipy.signal import convolve
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
@@ -109,22 +107,13 @@ def train_image(image: Image, key: PRNGKeyArray, epochs: int = 1000) -> Combined
     model = CombinedModel(image_data, latent_map, mlp)
     model = model.check()
 
-    num_devices = jax.device_count()
-    sharding = jshard.PositionalSharding(mesh_utils.create_device_mesh((num_devices, 1)))
-
     optim = optax.adam(learning_rate=1e-3)
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
-
-    (model, opt_state) = eqx.filter_shard(
-        (model, opt_state), sharding.replicate()
-    )  # i don't think this is necessary, but just in case
 
     def scan_fn(carry, _):
         model, opt_state, local_key = carry
         sample_key, subkey = jr.split(local_key)
         batch_coords, batch_pixels = sample_pixels(image, subkey, fraction=0.25)
-        batch_coords = eqx.filter_shard(batch_coords, sharding)
-        batch_pixels = eqx.filter_shard(batch_pixels, sharding)
         model, opt_state, loss = train_step(model, optim, opt_state, batch_coords, batch_pixels)
         model = model.check()
         return (model, opt_state, sample_key), loss
