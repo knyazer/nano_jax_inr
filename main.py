@@ -165,6 +165,13 @@ def data_loader(dataset_name, batch_size, num_devices=1):
                     max_w = max(max_w, normal_batch[-1].shape[0])
                     max_h = max(max_h, normal_batch[-1].shape[1])
 
+                efficiency_gap = 0
+                for im in normal_batch:
+                    efficiency_gap += (max_w - im.shape[0]) * (max_h - im.shape[1])
+                efficiency_gap /= len(normal_batch)
+                efficiency_gap /= max_w * max_h
+                logging.info(f"Efficiency gap: {efficiency_gap}")
+
                 small_batch = max_w > 1000 and max_h > 1000
 
                 # if small_batch:
@@ -213,7 +220,7 @@ def bench_dataset(dataset_name):
         batch_size = 64
     elif dataset_name == "imagenette":
         total = 14000  # ish
-        batch_size = 4
+        batch_size = 2
 
     num_devices = jax.device_count()
     batch_size = batch_size * num_devices
