@@ -21,6 +21,11 @@ from utils import Image
 
 initialise_tracking()
 
+try:
+    jax.distributed.initialize()
+except Exception:
+    print("No distributed training possible: are you multi-gpu?")
+
 FLAGS = flags.FLAGS
 flags.DEFINE_enum(
     "task", None, ["trial", "mnist", "imagenette"], "Type of the task to run.", required=True
@@ -35,7 +40,7 @@ try:
 
     mpl.use("TkAgg")
 except Exception as e:
-    print(f"Error importing matplotlib, plotting will not work. {e!s}")
+    print(f"Error importing matplotlib, plotting will not work. {e!s}.\nThis is not a big deal.")
 
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")  # noqa
@@ -124,7 +129,7 @@ def data_loader(dataset_name, batch_size, num_devices=1):
             imagenette = load_imagenette_images()
             while (cnt := cnt + 1) < num_images:
                 images = []
-                for _ in range(10 * batch_size):
+                for _ in range(30 * batch_size):
                     try:
                         image_data = next(imagenette)
                         if image_data.shape[0] > 1500 or image_data.shape[1] > 1500:
@@ -208,7 +213,7 @@ def bench_dataset(dataset_name):
         batch_size = 64
     elif dataset_name == "imagenette":
         total = 14000  # ish
-        batch_size = 1
+        batch_size = 4
 
     num_devices = jax.device_count()
     batch_size = batch_size * num_devices
