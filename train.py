@@ -118,7 +118,7 @@ def train_image(image: Image, key: PRNGKeyArray, epochs: int = 1000) -> Combined
         return (model, opt_state, sample_key), loss
 
     (model, opt_state, _), losses = jax.lax.scan(
-        scan_fn, (model, opt_state, k4), None, length=epochs, unroll=4
+        scan_fn, (model, opt_state, k4), None, length=epochs
     )
 
     return model
