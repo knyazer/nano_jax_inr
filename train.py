@@ -118,8 +118,11 @@ def train_image(image: Image, key: PRNGKeyArray, epochs: int = 1000) -> Combined
         model = model.check()
         return (model, opt_state, sample_key), loss
 
+    jax.debug.print("starting the looping")
+
     (model, opt_state, _), losses = jax.lax.scan(
         scan_fn, (model, opt_state, k4), None, length=epochs
     )
+    jax.debug.print("ending the looping")
 
     return model
