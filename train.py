@@ -115,11 +115,10 @@ def train_image(image: Image, key: PRNGKeyArray, epochs: int = 1000) -> Combined
         sample_key, subkey = jr.split(local_key)
         batch_coords, batch_pixels = sample_pixels(image, subkey, fraction=0.25)
         model, opt_state, loss = train_step(model, optim, opt_state, batch_coords, batch_pixels)
-        jax.debug.print("{}", model.mlp.layers[0].weight[0, 0])
         return (model, opt_state, sample_key), loss
 
     (model, opt_state, _), losses = jax.lax.scan(
-        scan_fn, (model, opt_state, k4), None, length=epochs
+        scan_fn, (model, opt_state, k4), None, length=epochs, unroll=4
     )
 
     return model
