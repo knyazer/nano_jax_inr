@@ -165,13 +165,6 @@ def data_loader(dataset_name, batch_size, num_devices=1):
                     max_w = max(max_w, normal_batch[-1].shape[0])
                     max_h = max(max_h, normal_batch[-1].shape[1])
 
-                efficiency_gap = 0
-                for im in normal_batch:
-                    efficiency_gap += (max_w - im.shape[0]) * (max_h - im.shape[1])
-                efficiency_gap /= len(normal_batch)
-                efficiency_gap /= max_w * max_h
-                logging.info(f"Efficiency gap: {efficiency_gap}")
-
                 small_batch = max_w > 1000 and max_h > 1000
 
                 # if small_batch:
@@ -205,6 +198,15 @@ def data_loader(dataset_name, batch_size, num_devices=1):
             assert stacked_shape.shape[0] == stacked_data.shape[0]
 
             image_soa = Image(data=stacked_data, shape=stacked_shape, channels=3).shrink_to_grid()
+
+            efficiency_gap = 0
+            max_w, max_h = image_soa.max_shape()
+            for i in range(len(image_batch)):
+                im_shape = image_soa.shape[i]
+                efficiency_gap += (max_w - int(im_shape[0])) * (max_h - int(im_shape[1]))
+            efficiency_gap /= len(image_batch)
+            efficiency_gap = efficiency_gap / (max_w * max_h)
+            logging.info(f"Pixels wasted gap: {efficiency_gap}")
             yield image_soa
 
     else:
