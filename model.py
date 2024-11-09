@@ -53,7 +53,6 @@ class LatentMap(eqx.Module):
             positions_stripped = positions[mask]
             tree = scipy.spatial.KDTree(positions_stripped)
             _, nearest_indices = tree.query(coords, k=4)
-            logging.info(f"spent {time.time() - t} seconds in kd callback")
             return nearest_indices.astype(jnp.int32)
 
         shape = jnp.broadcast_shapes((image.max_shape()[0] * image.max_shape()[1], 4))
@@ -106,6 +105,7 @@ class LatentMap(eqx.Module):
 
 
 class MLP(eqx.Module):
+    trainable: Array
     layers: list[eqx.nn.Linear]
 
     def __init__(self, in_dim: int, hidden_dims: list[int], out_dim: int, key: PRNGKeyArray):
@@ -115,6 +115,10 @@ class MLP(eqx.Module):
             for i in range(len(hidden_dims))
         ]
         self.layers.append(eqx.nn.Linear(hidden_dims[-1], out_dim, key=keys[-1]))
+        self.trainable = jnp.array(True)  # noqa
+
+    def freeze(self):
+        return eqx.tree_at(lambda s: s.trainable, self, False)  # noqa
 
     @jax.named_scope("mlp.check")
     def check(self):
@@ -130,9 +134,12 @@ class MLP(eqx.Module):
 
     @jax.named_scope("mlp.call")
     def __call__(self, x: Float[Array, "latent_dim"]) -> Float[Array, "..."]:
-        for layer in self.layers[:-1]:
+        layers = jax.lax.cond(
+            self.trainable, lambda x: x, lambda x: jax.lax.stop_gradient(x), self.layers
+        )
+        for layer in layers[:-1]:
             x = jax.nn.relu(layer(x))
-        x = self.layers[-1](x)
+        x = layers[-1](x)
         return x
 
 
@@ -141,22 +148,18 @@ class CombinedModel(eqx.Module):
 
     latent_map: LatentMap
     mlp: MLP
-    mu: Array
-    std: Array
 
     def __init__(self, image, latent_map, mlp):
-        self.mu = jnp.nanmean(image, axis=(0, 1)) * 0
-        self.std = jnp.nanstd(image, axis=(0, 1)) * 0 + 1
         self.latent_map = latent_map
         self.mlp = mlp
 
     @jax.named_scope("combined.call")
     def __call__(self, x: Int[Array, "2"]) -> Float[Array, "..."]:
         latent = self.latent_map(x)
-        out = self.mlp(latent) * jax.lax.stop_gradient(self.std) + jax.lax.stop_gradient(self.mu)
+        out = self.mlp(latent)
         return jax.lax.cond(
             jnp.any(jnp.isnan(out)),
-            lambda: jax.lax.stop_gradient(self.mu),
+            lambda: jnp.zeros_like(out),
             lambda: out,
         )
 
@@ -168,3 +171,13 @@ class CombinedModel(eqx.Module):
         cls = eqx.tree_at(lambda s: s.latent_map, cls, new_latent_map)
         cls = eqx.tree_at(lambda s: s.mlp, cls, new_mlp)
         return cls
+
+    def mlp_only(self, filter_fn):
+        return jax.tree_util.tree_map_with_path(
+            lambda path, leaf: filter_fn(leaf) & ("mlp" in jax.tree_util.keystr(path)), self
+        )
+
+    def latent_map_only(self, filter_fn):
+        return jax.tree_util.tree_map_with_path(
+            lambda path, leaf: filter_fn(leaf) & ("latent_map" in jax.tree_util.keystr(path)), self
+        )

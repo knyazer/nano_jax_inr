@@ -4,8 +4,11 @@ import jax.numpy as jnp
 import jax.profiler
 import jax.random as jr
 import optax
+from absl import logging
+from absl.flags import FLAGS
 from jax.scipy.signal import convolve
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
+from tqdm import tqdm
 
 from model import MLP, CombinedModel, LatentMap
 from utils import Image, make_mesh
@@ -36,30 +39,30 @@ def get_latent_points(key: PRNGKeyArray, image: Image, fraction: float = 0.05):
     limit_num_latents = image.max_latents()
     num_latents = (image.shape[0] * image.shape[1] * fraction).astype(jnp.int32)
     probs = grad_magnitude.reshape(-1)
-    probs = eqx.error_if(
-        probs, jnp.count_nonzero(probs) < num_latents, "Not enough pixels to sample"
-    )
-    probs = eqx.error_if(
-        probs, limit_num_latents < num_latents, "The number to sample is higher than the limit"
-    )
+    error_bool = jnp.array(False)  # noqa
+    error_bool = jnp.logical_or(error_bool, jnp.count_nonzero(probs) < num_latents)
+    error_bool = jnp.logical_or(error_bool, limit_num_latents < num_latents)
+    if FLAGS.on_error == "stop":
+        probs = eqx.error_if(
+            probs, jnp.count_nonzero(probs) < num_latents, "Not enough pixels to sample"
+        )
+        probs = eqx.error_if(
+            probs, limit_num_latents < num_latents, "The number to sample is higher than the limit"
+        )
 
     indices = jr.choice(key, grid, shape=(limit_num_latents,), p=probs, replace=False)
     indices = jnp.where(
         (jnp.arange(limit_num_latents) < num_latents)[:, None].repeat(2, 1), indices, -1
     )
+    if FLAGS.on_error == "skip":
+        return jax.lax.cond(error_bool, lambda: -jnp.ones_like(indices), lambda: indices).astype(
+            jnp.int32
+        )
     return indices.astype(jnp.int32)
 
 
-@jax.named_scope("train_step")
-def train_step(
-    model: CombinedModel,
-    optim: PyTree,
-    opt_state: PyTree,
-    coords: Float[Array, "*"],
-    pixels: Float[Array, "*"],
-) -> tuple:
-    # replace nan pixels with m.mu
-    no_nan_pixels = jnp.where(jnp.isnan(pixels), model.mu, pixels)
+def loss_and_grads(model, coords, pixels):
+    no_nan_pixels = jnp.where(jnp.isnan(pixels), 0.0, pixels)
     prod_mask = jnp.where(jnp.isnan(pixels), 0, 1)
     num_good_pixels = jnp.sum(jnp.any(jnp.logical_not(jnp.isnan(pixels)), axis=-1))
     num_good_pixels = jax.lax.cond(num_good_pixels == 0, lambda: 1, lambda: num_good_pixels)
@@ -68,10 +71,7 @@ def train_step(
         preds = eqx.filter_vmap(m)(coords)
         return jnp.sum(((preds - no_nan_pixels) * prod_mask).ravel() ** 2) / num_good_pixels
 
-    loss, grads = eqx.filter_value_and_grad(loss_fn)(model)
-    updates, opt_state = optim.update(grads, opt_state, eqx.filter(model, eqx.is_inexact_array))
-    new_model = eqx.apply_updates(model, updates)
-    return new_model, opt_state, loss
+    return eqx.filter_value_and_grad(loss_fn)(model)
 
 
 @jax.named_scope("sample_pixels")
@@ -92,15 +92,16 @@ def sample_pixels(
 
 @eqx.filter_jit
 @jax.named_scope("train_image")
-def train_image(image: Image, key: PRNGKeyArray, epochs: int = 1000) -> CombinedModel:
+def train_image(
+    image: Image, key: PRNGKeyArray, epochs: int = 1000, decoder: MLP | None = None
+) -> CombinedModel:
     """Trains an MLP model to represent a single image."""
     image_data = image.data
     w, h = image.shape  # 'channels' is separate cuz it must be static
     c = image.channels
 
     k1, k2, k3, k4 = jr.split(key, 4)
-
-    mlp = MLP(32, [32], c, k1)
+    mlp = decoder if decoder is not None else MLP(32, [32], c, k1)
     latent_points = get_latent_points(k2, image, fraction=0.05)
 
     latent_map = LatentMap(k3, latent_points, image)
@@ -114,7 +115,11 @@ def train_image(image: Image, key: PRNGKeyArray, epochs: int = 1000) -> Combined
         model, opt_state, local_key = carry
         sample_key, subkey = jr.split(local_key)
         batch_coords, batch_pixels = sample_pixels(image, subkey, fraction=0.25)
-        model, opt_state, loss = train_step(model, optim, opt_state, batch_coords, batch_pixels)
+
+        loss, grads = loss_and_grads(model, batch_coords, batch_pixels)
+        updates, opt_state = optim.update(grads, opt_state, eqx.filter(model, eqx.is_inexact_array))
+        model = eqx.apply_updates(model, updates)
+
         return (model, opt_state, sample_key), loss
 
     (model, opt_state, _), losses = jax.lax.scan(
@@ -122,3 +127,113 @@ def train_image(image: Image, key: PRNGKeyArray, epochs: int = 1000) -> Combined
     )
 
     return model
+
+
+def train_decoder(datagen, num_samples, key, epochs=1000):
+    logging.info("Starting to train decoder...")
+    k1, key = jr.split(key)
+    _test_image = next(datagen)
+    c = _test_image.channels
+    mlp = MLP(32, [32], c, k1)
+    mlp_opt = optax.adam(learning_rate=1e-3)
+    mlp_opt_state = mlp_opt.init(eqx.filter(mlp, eqx.is_inexact_array))
+
+    optim = optax.adam(learning_rate=1e-3)
+
+    def make_model(image, key):
+        k2, k3, k4, key = jr.split(key, 4)
+        latent_points = get_latent_points(k2, image, fraction=0.05)
+        latent_map = LatentMap(k3, latent_points, image)
+        model = CombinedModel(image.data, latent_map, mlp)
+        model = model.check()
+        return model
+
+    logging.info("Loading images...")
+    images = []
+    max_w = max_h = 0
+    for _ in tqdm(range(num_samples)):
+        images.append(next(datagen))
+        max_w = max(images[-1].max_shape()[0], max_w)
+        max_h = max(images[-1].max_shape()[1], max_h)
+
+    for i in range(len(images)):
+        images[i] = images[i].enlarge((max_w, max_h))
+    g_image_soa = jax.tree.map(lambda *args: jnp.stack(args), *images, is_leaf=eqx.is_array)
+
+    def init_model_and_opt(image, subkey):
+        model = make_model(image, subkey)
+        model = eqx.tree_at(lambda x: x.mlp, model, mlp)
+        opt_state = eqx.filter_jit(optim.init)(
+            eqx.filter(model, model.latent_map_only(eqx.is_inexact_array))
+        )
+        return model, opt_state
+
+    g_model_soa, g_opt_state_soa = jax.vmap(init_model_and_opt)(
+        g_image_soa, jr.split(key, len(images))
+    )
+
+    def epoch_step(carry, _):
+        # this one is a single epoch, should return the updated models opt_states, per-many-images
+        mlp, mlp_opt_state, model_soa, opt_state_soa, key = carry
+
+        def batch_step(carry_inner, model_image_opt):
+            # this one is a single batch, as in, per-image epoch
+            model, image, opt_state = model_image_opt
+            model = eqx.tree_at(lambda m: m.mlp, model, mlp)  # override the mlp part
+            accumulated_mlp_grads, key = carry_inner
+
+            sample_key, subkey = jr.split(key)
+            batch_coords, batch_pixels = sample_pixels(image, subkey, fraction=0.25)
+            loss, grads = loss_and_grads(model, batch_coords, batch_pixels)
+
+            _prev_mlp_param = model.mlp.layers[0].weight[0, 0]
+
+            mlp_grads = eqx.filter(grads, grads.mlp_only(eqx.is_inexact_array))
+            other_grads = eqx.filter(grads, grads.latent_map_only(eqx.is_inexact_array))
+
+            accumulated_mlp_grads = jax.tree.map(
+                lambda x, y: x + y,
+                accumulated_mlp_grads,
+                mlp_grads.mlp,
+                is_leaf=eqx.is_inexact_array,
+            )
+
+            updates, opt_state = optim.update(
+                other_grads,
+                opt_state,
+                eqx.filter(model, model.latent_map_only(eqx.is_inexact_array)),
+            )
+
+            model = eqx.apply_updates(model, updates)
+            model = eqx.error_if(
+                model, model.mlp.layers[0].weight[0, 0] != _prev_mlp_param, "oh no"
+            )
+
+            return (accumulated_mlp_grads, key), (model, opt_state)
+
+        accumulated_mlp_grads = jax.tree.map(jnp.zeros_like, eqx.filter(mlp, eqx.is_inexact_array))
+        initial_inner_carry = (accumulated_mlp_grads, key)
+        (accumulated_mlp_grads, _), (model_soa, opt_state_soa) = jax.lax.scan(
+            batch_step,
+            initial_inner_carry,
+            (model_soa, g_image_soa, opt_state_soa),
+        )
+
+        accumulated_mlp_grads = jax.tree.map(lambda x: x / num_samples, accumulated_mlp_grads)
+        mlp_updates, mlp_opt_state = mlp_opt.update(accumulated_mlp_grads, mlp_opt_state, mlp)
+        mlp = eqx.apply_updates(mlp, mlp_updates)
+
+        key_final = jr.split(key, 2)[0]
+        return (mlp, mlp_opt_state, model_soa, opt_state_soa, key_final), None
+
+    logging.info(
+        "Starting decoder training (this takes a while, because I don't parallelize it;"
+        " for imagenette it is like 4s * num_samples, for mnist it is 0.15s * num_samples)"
+    )
+
+    carry = (mlp, mlp_opt_state, g_model_soa, g_opt_state_soa, key)
+    (mlp, _, _, _, _), _ = eqx.filter_jit(jax.lax.scan)(epoch_step, carry, None, length=epochs)
+
+    logging.info("Decoder training done")
+
+    return mlp

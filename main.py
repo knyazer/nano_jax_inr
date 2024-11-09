@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from dataloader import load_imagenette_images, preprocess_mnist
 from evaluation import eval_image
-from train import train_image
+from train import train_decoder, train_image
 from utils import Image
 
 initialise_tracking()
@@ -28,11 +28,51 @@ except Exception:
 
 FLAGS = flags.FLAGS
 flags.DEFINE_enum(
-    "task", None, ["trial", "mnist", "imagenette"], "Type of the task to run.", required=True
+    "task",
+    None,
+    ["trial", "mnist", "imagenette", "recursive"],
+    "Type of the task to run. Recursive traverses a given folder.",
+    required=True,
 )
 
+# recursive-specific
+flags.DEFINE_string("source", None, "Path to the image or folder to process.")
+flags.DEFINE_string("target", "target", "Path to the target folder.")
+flags.DEFINE_bool(
+    "use_grid",
+    False,  # noqa
+    "Use a set of predetermined placheloder sizes when training for images."
+    "DO NOT ENABLE IF IMAGES ARE SAME SIZE. Also, feel free to modify the _GRID list in utils.py",
+)
+
+# general
+flags.DEFINE_integer(
+    "shared_decoder_images",
+    -1,
+    "For how many epochs do you wish to train the shared "
+    "decoder? -1 for none (which means, decoder is retrained everytime), 1-N is to train it for "
+    "this number of images, and then freeze.",
+)
 flags.DEFINE_integer("epochs", 1000, "Number of epochs to train the model.")
 flags.DEFINE_integer("num_images", -1, "Number of images to train on, if -1 use all images.")
+flags.DEFINE_boolean(
+    "ignore_big",
+    False,  # noqa
+    "Ignore big (1500x1500+) images. Improves performance wastly.",
+)
+flags.DEFINE_integer(
+    "batch_size", 1, "Per-device batch size, increase until OOM or performance stagnates."
+)
+
+# some debugging-ish flags
+flags.DEFINE_enum(
+    "on_error",
+    "skip",
+    ["skip", "stop", "attempt"],
+    "What to do on an error. Useful for debugging, bad otherwise: "
+    "the errors could be something like 'not enough pixels to sample',"
+    "which probably should be just ignored (ie skipped)",
+)
 
 try:
     import matplotlib as mpl
@@ -43,7 +83,7 @@ except Exception as e:
     print(f"Error importing matplotlib, plotting will not work. {e!s}.\nThis is not a big deal.")
 
 
-jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")  # noqa
+jax.config.update("jax_compilation_cache_dir", ".jax_cache")
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 
@@ -89,36 +129,26 @@ def trial_run():
 SKIPPED = 0
 
 
-def data_loader(dataset_name, batch_size, num_devices=1):
+def data_loader(dataset_name):
     num_images = FLAGS.num_images
     logging.info(f"Loading {num_images if num_images != -1 else 'all'} images...")
+    num_images = 100_000_000 if num_images == -1 else num_images
 
     if dataset_name == "mnist":
         mnist = fetch_openml("mnist_784", version=1, as_frame=False)
         mnist_images, mnist_labels = preprocess_mnist(mnist)
-        num_train_images = len(mnist_images) if num_images == -1 else num_images
 
         # batch image objects
-        for chunk_idx in range(0, num_train_images, batch_size):
-            batch_images = []
-            for idx in range(chunk_idx, min(chunk_idx + batch_size, num_train_images)):
-                image_data = mnist_images[idx].reshape(28, 28)
-                image_data = jnp.array(image_data)[..., None]
-                image = Image(
-                    data=image_data,
-                    shape=image_data.shape,
-                    channels=1,
-                    maxsize=(28, 28),
-                )
-                batch_images.append(image)
-
-            stacked_data = jnp.stack([image.data for image in batch_images])
-            stacked_shape = jnp.stack([image.shape for image in batch_images])
-
-            assert stacked_shape.shape[0] == stacked_data.shape[0]
-
-            image_soa = Image(data=stacked_data, shape=stacked_shape, channels=1, maxsize=(28, 28))
-            yield image_soa
+        for idx in range(num_images):
+            image_data = mnist_images[idx].reshape(28, 28)
+            image_data = jnp.array(image_data)[..., None]
+            image = Image(
+                data=image_data,
+                shape=image_data.shape,
+                channels=1,
+                maxsize=(28, 28),
+            )
+            yield image
 
     elif dataset_name == "imagenette":
         # the strategy is: preload a bs * 20 images, sort the images by one of dims;
@@ -127,12 +157,17 @@ def data_loader(dataset_name, batch_size, num_devices=1):
             cnt = 0
             done = False
             imagenette = load_imagenette_images()
-            while (cnt := cnt + 1) < num_images:
+            while True:
                 images = []
-                for _ in range(30 * batch_size):
+                for _ in range(100):
+                    if (cnt := cnt + 1) > num_images:
+                        done = True
+                        break
                     try:
-                        image_data = next(imagenette)
-                        if image_data.shape[0] > 1500 or image_data.shape[1] > 1500:
+                        image_data, image_s = next(imagenette)
+                        if FLAGS.ignore_big and (
+                            image_data.shape[0] > 1500 or image_data.shape[1] > 1500
+                        ):
                             global SKIPPED
                             SKIPPED += 1
                             logging.info(f"Skipping large image; total number skipped: {SKIPPED}")
@@ -141,100 +176,110 @@ def data_loader(dataset_name, batch_size, num_devices=1):
                         done = True
                         break
                     image_data = jnp.array(image_data)
-                    images.append(image_data)
-                images = sorted(images, key=lambda x: x.shape[0] * x.shape[1])
+                    image = Image(
+                        data=image_data,
+                        shape=image_data.shape,
+                        channels=image_data.shape[-1],
+                        maxsize="auto",
+                    )
+                    images.append((image, image_s))
+                images = sorted(images, key=lambda x: x[0].shape[0] * x[0].shape[1])
 
-                yield from images
+                for img, img_s in images:
+                    logging.info(f"Using {img_s} image...")
+                    yield img
                 del images
 
                 if done:
                     break
 
-        def batched_sorted_image_gen():
-            # load images, if image is smaller than 1000x1000 batch it with batch_size other images,
-            # otherwise batch it with batch_size / 4 other images
-            generator = sorted_image_gen()
-
-            while True:
-                normal_batch = []
-                small_batch = False
-                max_h = 0
-                max_w = 0
-                for _ in range(batch_size):
-                    normal_batch.append(next(generator))
-                    max_w = max(max_w, normal_batch[-1].shape[0])
-                    max_h = max(max_h, normal_batch[-1].shape[1])
-
-                small_batch = max_w > 1000 and max_h > 1000
-
-                # if small_batch:
-                #     for chunk_start in range(0, len(normal_batch), batch_size // 4):
-                #         yield (
-                #             normal_batch[chunk_start : chunk_start + batch_size // 4],
-                #             (max_w, max_h),
-                #         )
-                # else:
-                #     yield normal_batch, (max_w, max_h)
-                yield normal_batch, (max_w, max_h)
-                del normal_batch
-
-        num_images = num_images if num_images != -1 else 100_000_000
-        for image_batch, max_sz in batched_sorted_image_gen():
-            batch_images = []
-            for raw_image_data in image_batch:
-                image_data = jnp.array(raw_image_data)
-                image = Image(
-                    data=image_data,
-                    shape=image_data.shape,
-                    channels=3,
-                    maxsize=max_sz,
-                )
-                batch_images.append(image)
-
-            stacked_data = jnp.stack([image.data for image in batch_images])
-            stacked_shape = jnp.stack([image.shape for image in batch_images])
-            del batch_images
-
-            assert stacked_shape.shape[0] == stacked_data.shape[0]
-
-            image_soa = Image(data=stacked_data, shape=stacked_shape, channels=3).shrink_to_grid()
-
-            efficiency_gap = 0
-            max_w, max_h = image_soa.max_shape()
-            for i in range(len(image_batch)):
-                im_shape = image_soa.shape[i]
-                efficiency_gap += (max_w - int(im_shape[0])) * (max_h - int(im_shape[1]))
-            efficiency_gap /= len(image_batch)
-            efficiency_gap = efficiency_gap / (max_w * max_h)
-            logging.info(f"Pixels wasted gap: {efficiency_gap}")
-            yield image_soa
+        generator = sorted_image_gen()
+        yield from generator
 
     else:
         _msg = f"Dataset {dataset_name} not implemented."
         raise NotImplementedError(_msg)
 
 
+def batchify(generator, batch_size):
+    # load images, if image is smaller than 1000x1000 batch it with batch_size other images,
+    # otherwise batch it with batch_size / 4 other images
+
+    while True:
+        max_h = 0
+        max_w = 0
+        image_batch = []
+        for _ in range(batch_size):
+            image = next(generator)
+
+            max_w = max(max_w, image.shape[0])
+            max_h = max(max_h, image.shape[1])
+
+            image_batch.append(image)
+
+        logging.info(f"Enlarging to ({max_w}, {max_h})...")
+        # now we wish to transform the images into Images with placeholder being the max_size
+        for i in range(len(image_batch)):
+            image_batch[i] = image_batch[i].enlarge((max_w, max_h))
+
+        stacked_data = jnp.stack([image.data for image in image_batch])
+        stacked_shape = jnp.stack([image.shape for image in image_batch])
+
+        assert stacked_shape.shape[0] == stacked_data.shape[0]
+
+        image_soa = Image(data=stacked_data, shape=stacked_shape, channels=3)
+        if (
+            not (
+                jnp.all(image_soa.shape[:, 0] == image_soa.shape[0, 0])
+                and jnp.all(image_soa.shape[:, 1] == image_soa.shape[0, 1])
+            )
+            or batch_size == 1
+        ):
+            image_soa = image_soa.shrink_to_grid()
+        else:
+            logging.warning("Using no grid shrinkage: all images must be the same size.")
+
+        efficiency_gap = 0
+        max_w, max_h = image_soa.max_shape()
+        for i in range(len(image_batch)):
+            im_shape = image_soa.shape[i]
+            efficiency_gap += max_w * max_h - int(im_shape[0]) * int(im_shape[1])
+        efficiency_gap /= len(image_batch)
+        efficiency_gap = efficiency_gap / (max_w * max_h)
+        logging.info(f"Efficiency: {1.0 - efficiency_gap}")
+        yield image_soa
+
+
 def bench_dataset(dataset_name):
     total = 0
-    batch_size = 2
+    batch_size = FLAGS.batch_size
     if dataset_name == "mnist":
         total = 60000
-        batch_size = 64
     elif dataset_name == "imagenette":
         total = 14000  # ish
-        batch_size = 2
 
     num_devices = jax.device_count()
     batch_size = batch_size * num_devices
     devices = mesh_utils.create_device_mesh((num_devices, 1, 1, 1))
     sharding = jshard.PositionalSharding(devices)
 
-    datagen = data_loader(dataset_name, batch_size)
+    datagen_single = data_loader(dataset_name)
+    batched_datagen = batchify(datagen_single, batch_size)
 
-    fn = eqx.Partial(train_image, epochs=FLAGS.epochs)
+    frozen_decoder = None
+    if FLAGS.shared_decoder_images != -1:
+        logging.info("Starting decoder pretraining...")
+        frozen_decoder = train_decoder(datagen_single, FLAGS.shared_decoder_images, key=jr.key(42))
+        logging.info("Decoder pretraining done.")
+
+        # reinstantiate the generators, as we've exhausted a bunch of images
+        datagen_single = data_loader(dataset_name)
+        batched_datagen = batchify(datagen_single, batch_size)
+
+    fn = eqx.Partial(train_image, epochs=FLAGS.epochs, decoder=frozen_decoder)
 
     idx = 0
-    for image_batch in tqdm(datagen, total=total // batch_size):
+    for image_batch in tqdm(batched_datagen, total=total // batch_size):
         key = jr.key(idx := idx + 1)
         logging.info("Training...")
 

@@ -71,7 +71,7 @@ def preprocess_mnist(mnist_data: Any) -> tuple[np.ndarray, np.ndarray]:
     return X, y
 
 
-def load_imagenette_images() -> Generator[np.ndarray, None, None]:
+def load_imagenette_images():
     if not IMAGENETTE_DIR.exists():
         download_file(IMAGENETTE_URL, IMAGENETTE_TGZ)
         extract_tar_gz(IMAGENETTE_TGZ, IMAGENETTE_DIR)
@@ -83,6 +83,6 @@ def load_imagenette_images() -> Generator[np.ndarray, None, None]:
                 with Image.open(img_path) as _img:
                     img = _img.convert("RGB")
                     img_array = np.array(img).astype(np.float32) / 255.0  # Normalize to [0,1]
-                    yield img_array
+                    yield (img_array, img_path)
             except Exception as e:
                 logging.warning("Failed to load image %s: %s", img_path, e)

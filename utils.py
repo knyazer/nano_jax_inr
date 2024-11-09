@@ -14,12 +14,18 @@ MAX_DIM = 5000
 # use of batching on the images, if they are small
 _grid_size_distr = [
     200,
+    225,
     250,
+    275,
     300,
+    325,
     350,
+    375,
     400,
     450,
+    475,
     500,
+    525,
     550,
     600,
     700,
@@ -28,15 +34,15 @@ _grid_size_distr = [
     1300,
     1500,
     2048,
-    5000,
 ]
 
 
 def _generate_grid():
     g = []
     for w in _grid_size_distr:
-        for h in _grid_size_distr[::2]:
+        for h in _grid_size_distr:
             g.append((w, h))
+    g.append((MAX_DIM, MAX_DIM))
     return g
 
 
@@ -44,14 +50,14 @@ _GRID = _generate_grid()
 
 
 class Image(eqx.Module):
+    channels: int = eqx.field(static=True)
+    _max_shape: tuple = eqx.field(static=True)
     data: Float[Array, "* maxd maxd c"]
     shape: Int[Array, "* 2"]
-    channels: int
-    _max_shape: tuple
 
     def __init__(self, data, shape, channels, maxsize: str | tuple = "auto"):
         self.shape = jnp.array(shape)[..., :2]
-        self.channels = channels
+        self.channels = int(channels)
 
         # figure out max shape
         if maxsize == "auto":
@@ -84,6 +90,17 @@ class Image(eqx.Module):
 
     def max_latents(self):
         return int(self.max_shape()[0] * self.max_shape()[1] * 0.05)
+
+    def enlarge(self, new_max_shape):
+        with jax.ensure_compile_time_eval():
+            new_max_shape = (int(new_max_shape[0]), int(new_max_shape[1]))
+            new_image = Image(
+                self.data,
+                self.shape,
+                self.channels,
+                maxsize=new_max_shape,
+            )
+            return new_image
 
     def shrink(self):
         with jax.ensure_compile_time_eval():
