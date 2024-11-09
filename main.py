@@ -14,6 +14,7 @@ from jax_smi import initialise_tracking
 from sklearn.datasets import fetch_openml
 from tqdm import tqdm
 
+from config import load_config_from_py
 from dataloader import load_imagenette_images, preprocess_mnist
 from evaluation import eval_image
 from train import train_decoder, train_image
@@ -27,17 +28,12 @@ except Exception:
     print("No distributed training possible: are you multi-gpu?")
 
 FLAGS = flags.FLAGS
-flags.DEFINE_enum(
-    "task",
-    None,
-    ["trial", "mnist", "imagenette", "recursive"],
-    "Type of the task to run. Recursive traverses a given folder.",
-    required=True,
-)
 
 # recursive-specific
-flags.DEFINE_string("source", None, "Path to the image or folder to process.")
-flags.DEFINE_string("target", "target", "Path to the target folder.")
+flags.DEFINE_string(
+    "config", None, "Path to the config file. It is in the root of the folder with images."
+)
+
 flags.DEFINE_bool(
     "use_grid",
     False,  # noqa
@@ -46,14 +42,6 @@ flags.DEFINE_bool(
 )
 
 # general
-flags.DEFINE_integer(
-    "shared_decoder_images",
-    -1,
-    "For how many epochs do you wish to train the shared "
-    "decoder? -1 for none (which means, decoder is retrained everytime), 1-N is to train it for "
-    "this number of images, and then freeze.",
-)
-flags.DEFINE_integer("epochs", 1000, "Number of epochs to train the model.")
 flags.DEFINE_integer("num_images", -1, "Number of images to train on, if -1 use all images.")
 flags.DEFINE_boolean(
     "ignore_big",
@@ -301,6 +289,9 @@ def main(argv):
         logging.set_verbosity(logging.INFO)
     else:
         logging.set_verbosity(logging.ERROR)
+
+    if FLAGS.config is not None:
+        load_config_from_py(FLAGS.config)
 
     if FLAGS.task == "trial":
         trial_run()
