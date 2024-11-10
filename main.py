@@ -359,7 +359,7 @@ def bench_dataset(dataset_name):
             preds.append(_preds)
 
         with jax.ensure_compile_time_eval():
-            for i in range(batch_size):
+            for i in range(image_sharded.shape.shape[0]):
                 # partition the model
                 res_dict = {}
                 preds_dict = {}
