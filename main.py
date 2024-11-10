@@ -14,11 +14,12 @@ from jax_smi import initialise_tracking
 from sklearn.datasets import fetch_openml
 from tqdm import tqdm
 
+from config import get_config as C  # noqa
 from config import load_config_from_py
 from dataloader import load_imagenette_images, preprocess_mnist
-from evaluation import eval_image
+from evaluation import eval_image, record_results
 from train import train_decoder, train_image
-from utils import Image
+from utils import Image, make_target_path
 
 initialise_tracking()
 
@@ -29,7 +30,13 @@ except Exception:
 
 FLAGS = flags.FLAGS
 
-# recursive-specific
+flags.DEFINE_enum(
+    "task",
+    None,
+    ["trial", "mnist", "imagenette", "ablation"],
+    "Type of the task to run. Ablation traverses a given folder.",
+    required=True,
+)
 flags.DEFINE_string(
     "config", None, "Path to the config file. It is in the root of the folder with images."
 )
@@ -81,7 +88,7 @@ def trial_run():
     logging.info("Loading trial images..")
     for file in os.listdir(Path("trial_images")):
         if file.endswith((".png", ".JPEG")):
-            image_data = plt.imread(Path("trial_images") / file)
+            image_data = plt.imread(Path("trial_images") / file)  # type: ignore
             image_shape = image_data.shape[:2]
             if len(image_data.shape) == 2:
                 image_data = image_data[..., None]
@@ -104,8 +111,8 @@ def trial_run():
     store = [[] for _ in images]
     for key in jr.split(jr.key(0), 10):
         for i, image in enumerate(images):
-            model = eqx.filter_jit(train_image)(image, key, epochs=FLAGS.epochs)
-            psnr = eval_image(model, image.data)
+            models = eqx.filter_jit(train_image)(image, key, epochs_list=[FLAGS.epochs])
+            psnr = eval_image(models[-1], image.data)
             logging.info("PSNR for trial image: %.2f", psnr)
             store[i].append(psnr)
     store = jnp.array(store)
@@ -117,7 +124,7 @@ def trial_run():
 SKIPPED = 0
 
 
-def data_loader(dataset_name):
+def data_loader(dataset_name):  # noqa
     num_images = FLAGS.num_images
     logging.info(f"Loading {num_images if num_images != -1 else 'all'} images...")
     num_images = 100_000_000 if num_images == -1 else num_images
@@ -136,7 +143,7 @@ def data_loader(dataset_name):
                 channels=1,
                 maxsize=(28, 28),
             )
-            yield image
+            yield image, Path(f"mnist_cache/{idx}.png")
 
     elif dataset_name == "imagenette":
         # the strategy is: preload a bs * 20 images, sort the images by one of dims;
@@ -156,7 +163,7 @@ def data_loader(dataset_name):
                         if FLAGS.ignore_big and (
                             image_data.shape[0] > 1500 or image_data.shape[1] > 1500
                         ):
-                            global SKIPPED
+                            global SKIPPED  # noqa
                             SKIPPED += 1
                             logging.info(f"Skipping large image; total number skipped: {SKIPPED}")
                             continue
@@ -173,15 +180,54 @@ def data_loader(dataset_name):
                     images.append((image, image_s))
                 images = sorted(images, key=lambda x: x[0].shape[0] * x[0].shape[1])
 
-                for img, img_s in images:
-                    logging.info(f"Using {img_s} image...")
-                    yield img
+                yield from images
                 del images
 
                 if done:
                     break
 
         generator = sorted_image_gen()
+        yield from generator
+
+    elif dataset_name == "ablation":
+        # this one loads all the files from a folder, effectively the same as imagenette folder,
+        # but does not sort images, assumes they are constant size
+        def ablation_image_gen():
+            path = Path("Image datasets") / Path(C().dataset)
+            for file in path.rglob("*"):
+                if not str(file).lower().endswith((".png", ".jpeg", ".jpg")):
+                    continue
+                try:
+                    image_data = plt.imread(file)  # type: ignore
+                    image_shape = image_data.shape[:2]
+                    if image_data.ndim == 2:
+                        image_data = image_data[..., None]
+                        channels = 1
+                    else:
+                        channels = image_data.shape[2]
+                    if image_data.max() > 2:
+                        image_data = jnp.array(image_data, dtype=jnp.float32) / 255.0
+                    image = Image(
+                        data=jnp.array(image_data),
+                        shape=jnp.array(image_shape),
+                        channels=channels,
+                        maxsize="auto",
+                    )
+                    yield image, file
+                except Exception as e:
+                    logging.error(f"Error loading file {file}: {e!s}")
+                    if FLAGS.on_error == "skip":
+                        global SKIPPED  # noqa
+                        SKIPPED += 1
+                        logging.info(f"Skipping file {file}; total skipped: {SKIPPED}")
+                        continue
+                    elif FLAGS.on_error == "stop":
+                        raise
+                    elif FLAGS.on_error == "attempt":
+                        logging.warning(f"Attempting to fix file {file}, but not implemented.")
+                        continue
+
+        generator = ablation_image_gen()
         yield from generator
 
     else:
@@ -197,13 +243,19 @@ def batchify(generator, batch_size):
         max_h = 0
         max_w = 0
         image_batch = []
-        for _ in range(batch_size):
-            image = next(generator)
+        pathes = []
+        while len(image_batch) < batch_size:
+            image, path = next(generator)
+            path = make_target_path(path)
+
+            if path.exists():
+                continue
 
             max_w = max(max_w, image.shape[0])
             max_h = max(max_h, image.shape[1])
 
             image_batch.append(image)
+            pathes.append(path)
 
         logging.info(f"Enlarging to ({max_w}, {max_h})...")
         # now we wish to transform the images into Images with placeholder being the max_size
@@ -235,7 +287,7 @@ def batchify(generator, batch_size):
         efficiency_gap /= len(image_batch)
         efficiency_gap = efficiency_gap / (max_w * max_h)
         logging.info(f"Efficiency: {1.0 - efficiency_gap}")
-        yield image_soa
+        yield image_soa, pathes
 
 
 def bench_dataset(dataset_name):
@@ -245,6 +297,8 @@ def bench_dataset(dataset_name):
         total = 60000
     elif dataset_name == "imagenette":
         total = 14000  # ish
+    else:
+        total = len(list((Path("Image datasets") / Path(C().dataset)).rglob("*")))
 
     num_devices = jax.device_count()
     batch_size = batch_size * num_devices
@@ -255,19 +309,29 @@ def bench_dataset(dataset_name):
     batched_datagen = batchify(datagen_single, batch_size)
 
     frozen_decoder = None
-    if FLAGS.shared_decoder_images != -1:
+    if C().dec_shared_at_step != -1:
         logging.info("Starting decoder pretraining...")
-        frozen_decoder = train_decoder(datagen_single, FLAGS.shared_decoder_images, key=jr.key(42))
+        frozen_decoder = train_decoder(
+            datagen_single, C().dec_shared_at_step, key=jr.key(42), epochs=C().num_steps
+        )
         logging.info("Decoder pretraining done.")
 
         # reinstantiate the generators, as we've exhausted a bunch of images
         datagen_single = data_loader(dataset_name)
         batched_datagen = batchify(datagen_single, batch_size)
 
-    fn = eqx.Partial(train_image, epochs=FLAGS.epochs, decoder=frozen_decoder)
+    epochs_list = []
+    abs_epochs = [0, *C().save_intermittently_at, C().num_steps]
+    for i in range(len(abs_epochs) - 1):
+        delta = abs_epochs[i + 1] - abs_epochs[i]
+        epochs_list.append(delta)
+
+    logging.info(f"Using effective epoch deltas: {epochs_list}")
+
+    fn = eqx.Partial(train_image, epochs_list=epochs_list, decoder=frozen_decoder)
 
     idx = 0
-    for image_batch in tqdm(batched_datagen, total=total // batch_size):
+    for image_batch, image_path in tqdm(batched_datagen, total=total // batch_size):
         key = jr.key(idx := idx + 1)
         logging.info("Training...")
 
@@ -275,10 +339,20 @@ def bench_dataset(dataset_name):
         dynamic = jax.lax.with_sharding_constraint(dynamic, sharding)
         image_sharded = eqx.combine(dynamic, static)  # rebuild
 
-        model = eqx.filter_vmap(fn)(image_sharded, jr.split(key, image_sharded.shape.shape[0]))
+        models_list = eqx.filter_vmap(fn)(
+            image_sharded, jr.split(key, image_sharded.shape.shape[0])
+        )
         logging.info("... done; evaluating...")
-        psnr = eqx.filter_vmap(eval_image)(model, image_sharded)
+        psnr, preds = eqx.filter_vmap(eval_image)(models_list[-1], image_sharded)
         logging.info("Batch PSNR: %.2f +- %.2f", float(psnr.mean()), float(psnr.std()))
+
+        for i in range(batch_size):
+            # partition the model
+            res_dict = {}
+            for ep, model in zip(abs_epochs[1:], [*models_list]):
+                model_i = jax.tree.map(lambda x: x[i], model, is_leaf=eqx.is_array)
+                res_dict[str(ep)] = model_i
+            record_results(res_dict, preds[i], image_path[i])
 
 
 def main(argv):
@@ -299,6 +373,8 @@ def main(argv):
         bench_dataset("mnist")
     elif FLAGS.task == "imagenette":
         bench_dataset("imagenette")
+    elif FLAGS.task == "ablation":
+        bench_dataset("ablation")
     else:
         _msg = f"Task {FLAGS.task} not implemented. This is... weird. Ask knyazer about it"
         logging.error(_msg)

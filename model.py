@@ -8,6 +8,8 @@ import scipy.spatial
 from absl import logging
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
+from config import DistFuncEnum, HarmonicsFuncEnum, InrTypeEnum
+from config import get_config as C  # noqa
 from utils import make_mesh
 
 
@@ -47,28 +49,39 @@ class LatentMap(eqx.Module):
         coords = make_mesh(image.max_shape())
 
         def kd_neighbors_callback(positions, coords):
-            t = time.time()
+            t = time.time()  # noqa
             # strip nans from positions
             mask = jnp.logical_not(jnp.any(jnp.isnan(positions), axis=-1))
             positions_stripped = positions[mask]
             tree = scipy.spatial.KDTree(positions_stripped)
-            _, nearest_indices = tree.query(coords, k=4)
+            _, nearest_indices = tree.query(coords, k=C().num_neighbours)
             return nearest_indices.astype(jnp.int32)
 
-        shape = jnp.broadcast_shapes((image.max_shape()[0] * image.max_shape()[1], 4))
+        shape = jnp.broadcast_shapes(
+            (image.max_shape()[0] * image.max_shape()[1], C().num_neighbours)
+        )
         dtype = jnp.result_type(jnp.int32)
         out_type = jax.ShapeDtypeStruct(shape, dtype)
         nearest_indices = jax.pure_callback(kd_neighbors_callback, out_type, positions, coords)
 
-        neighbor_map = -jnp.ones((*image.max_shape(), 4))
+        neighbor_map = -jnp.ones((*image.max_shape(), C().num_neighbours))
         neighbor_map = neighbor_map.at[coords[:, 0], coords[:, 1]].set(nearest_indices)
 
         self.neighbor_map = neighbor_map.astype(jnp.int32)
         self.positions = positions
-        self.embeddings = jr.uniform(key, (len(positions), 32), minval=-1e-4, maxval=1e-4)
+        self.embeddings = jr.uniform(
+            key,
+            (len(positions), C().latent_dim),
+            minval=-C().latent_init_distr[1]["a"],
+            maxval=C().latent_init_distr[1]["b"],
+        )
 
-        harmonics_range = jnp.array([2**-3, 2**12])
-        harmonics = jnp.linspace(jnp.log2(harmonics_range[0]), jnp.log2(harmonics_range[1]), 32)
+        harmonics_range = jnp.array(
+            [C().harmonics_method[1]["start"], C().harmonics_method[1]["end"]]
+        )
+        harmonics = jnp.linspace(
+            jnp.log2(harmonics_range[0]), jnp.log2(harmonics_range[1]), C().latent_dim
+        )
         harmonics = jnp.exp2(harmonics)
         self.harmonics = harmonics
 
@@ -82,7 +95,12 @@ class LatentMap(eqx.Module):
         return eqx.tree_at(lambda s: s.embeddings, self, new_embeddings)
 
     def harm_function(self, x):
-        return jnp.cos(x)
+        if C().harmonics_function == HarmonicsFuncEnum.SIN:
+            return jnp.sin(x)
+        if C().harmonics_function == HarmonicsFuncEnum.COS:
+            return jnp.cos(x)
+        _msg = f"Unknown harmonics function: {C().harmonics_function}"
+        raise ValueError(_msg)
 
     @jax.named_scope("LatentMap.call")
     def __call__(self, position: Float[Array, "2"]):
@@ -92,16 +110,33 @@ class LatentMap(eqx.Module):
             neighbors, neighbors.sum() < 0, "Undefined neighbors: index out of bounds."
         )
         latents = self.embeddings[neighbors]
-        distances = jax.lax.stop_gradient(
-            jnp.linalg.norm(self.positions[neighbors] - int_pos, axis=1)
-        )
+        deltas = self.positions[neighbors] - int_pos
+        distances = jax.lax.stop_gradient(jnp.linalg.norm(deltas, axis=1))
 
-        dist_fn = dists_neurbf
-        distances = dist_fn(distances)
+        if C().inr_type == InrTypeEnum.STANDARD:
+            if C().dist_function == DistFuncEnum.SUMTO1_NONLINEAR:
+                dist_fn = dists_to1
+            elif C().dist_function == DistFuncEnum.IDENTITY:
+                dist_fn = lambda x: x  # noqa
+            elif C().dist_function == DistFuncEnum.NEURBF:
+                dist_fn = dists_neurbf
+            else:
+                _msg = f"Unknown distance function: {C().dist_function}"
+                raise ValueError(_msg)
+            distances = dist_fn(distances)
 
-        harmonized = distances[:, None] @ self.harmonics[None, :]
-        out = self.harm_function(harmonized) * latents
-        return out.sum(axis=-2)
+            harmonized = distances[:, None] @ self.harmonics[None, :]
+            out = self.harm_function(harmonized) * latents
+            return out.sum(axis=-2)
+        if C().inr_type == InrTypeEnum.RELPOS:
+            d = deltas.astype(jnp.float32)
+            if C().relpos_normalise:
+                d = (d - d.mean()) / (d.std() + 1e-6)
+            out = jnp.concatenate([d.ravel(), latents.ravel()], axis=-1).ravel()
+            logging.info(f"Using relative position, output shape is {out.shape}")
+            return out
+        _msg = f"Unknown inr type: {C().inr_type}"
+        raise ValueError(_msg)
 
 
 class MLP(eqx.Module):
@@ -149,7 +184,7 @@ class CombinedModel(eqx.Module):
     latent_map: LatentMap
     mlp: MLP
 
-    def __init__(self, image, latent_map, mlp):
+    def __init__(self, _image, latent_map, mlp):
         self.latent_map = latent_map
         self.mlp = mlp
 

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -20,12 +22,23 @@ def compute_psnr(true_image: Float[Array, "*"], pred_image: Float[Array, "*"]) -
 
 
 @eqx.filter_jit
-def eval_image(model: CombinedModel, image: Image) -> Float[Array, ""]:
+def eval_image(model: CombinedModel, image: Image):
     w, h = image.max_shape()
     coords = make_mesh((w, h))
 
     preds = eqx.filter_vmap(model)(coords)
     ground_truth = image.data[coords[:, 0], coords[:, 1]]
-
     psnr = compute_psnr(preds, ground_truth)
-    return psnr
+
+    return psnr, preds.reshape((w, h))
+
+
+def record_results(model_chks, preds, path: Path):
+    # path is the path of the image, so we want to remove file extension and rename the root folder
+    with jax.ensure_compile_time_eval():
+        path.mkdir(parents=True)
+        for idx, model in model_chks.items():
+            latents = model.latent_map.embeddings
+            latents = latents[~jnp.isnan(latents).any(axis=1)]
+            jnp.save(path / Path(f"latents_{idx}.npy"), latents)
+        plt.imsave(path / Path("preds.png"), preds.T)

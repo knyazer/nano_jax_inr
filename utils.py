@@ -1,10 +1,12 @@
-import math
+from pathlib import Path
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from absl import logging
 from jaxtyping import Array, Float, Int
+
+from config import get_config as C  # noqa
 
 MAX_DIM = 5000
 
@@ -89,7 +91,9 @@ class Image(eqx.Module):
         return self._max_shape
 
     def max_latents(self):
-        return int(self.max_shape()[0] * self.max_shape()[1] * 0.05)
+        if type(C().num_latents) is float:
+            return int(self.max_shape()[0] * self.max_shape()[1] * C().num_latents)
+        return C().num_latents
 
     def enlarge(self, new_max_shape):
         with jax.ensure_compile_time_eval():
@@ -147,3 +151,7 @@ class Image(eqx.Module):
 
 def make_mesh(shape):
     return jnp.stack(jnp.meshgrid(jnp.arange(shape[0]), jnp.arange(shape[1]))).reshape(2, -1).T
+
+
+def make_target_path(path):
+    return Path("Processed Images", C().alias, *path.parts[1:-1], Path(path.parts[-1]).stem)

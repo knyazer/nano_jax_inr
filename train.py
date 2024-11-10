@@ -7,15 +7,17 @@ import optax
 from absl import logging
 from absl.flags import FLAGS
 from jax.scipy.signal import convolve
-from jaxtyping import Array, Float, PRNGKeyArray, PyTree
+from jaxtyping import Array, Float, PRNGKeyArray
 from tqdm import tqdm
 
+from config import InrTypeEnum, SampleEnum
+from config import get_config as C  # noqa
 from model import MLP, CombinedModel, LatentMap
 from utils import Image, make_mesh
 
 
 @jax.named_scope("get_latent_points")
-def get_latent_points(key: PRNGKeyArray, image: Image, fraction: float = 0.05):
+def get_latent_points(key: PRNGKeyArray, image: Image, fraction: float | int):
     w, h, c = image.data.shape
 
     # the following piece of code is somewhat weirdly written:
@@ -37,7 +39,10 @@ def get_latent_points(key: PRNGKeyArray, image: Image, fraction: float = 0.05):
     grid = jnp.stack([x_grid, y_grid], axis=-1).reshape(-1, 2)
 
     limit_num_latents = image.max_latents()
-    num_latents = (image.shape[0] * image.shape[1] * fraction).astype(jnp.int32)
+    if fraction < 1:
+        num_latents = (image.shape[0] * image.shape[1] * fraction).astype(jnp.int32)
+    else:
+        num_latents = jnp.array(fraction).astype(jnp.int32)
     probs = grad_magnitude.reshape(-1)
     error_bool = jnp.array(False)  # noqa
     error_bool = jnp.logical_or(error_bool, jnp.count_nonzero(probs) < num_latents)
@@ -50,7 +55,7 @@ def get_latent_points(key: PRNGKeyArray, image: Image, fraction: float = 0.05):
             probs, limit_num_latents < num_latents, "The number to sample is higher than the limit"
         )
 
-    indices = jr.choice(key, grid, shape=(limit_num_latents,), p=probs, replace=False)
+    indices = jr.choice(key, grid, shape=(int(limit_num_latents),), p=probs, replace=False)
     indices = jnp.where(
         (jnp.arange(limit_num_latents) < num_latents)[:, None].repeat(2, 1), indices, -1
     )
@@ -78,7 +83,7 @@ def loss_and_grads(model, coords, pixels):
 def sample_pixels(
     image: Image,
     key: PRNGKeyArray,
-    fraction=0.25,
+    fraction: float,
 ) -> tuple:
     w, h = image.shape
     W, H = image.max_shape()  # noqa
@@ -93,56 +98,94 @@ def sample_pixels(
 @eqx.filter_jit
 @jax.named_scope("train_image")
 def train_image(
-    image: Image, key: PRNGKeyArray, epochs: int = 1000, decoder: MLP | None = None
-) -> CombinedModel:
+    image: Image, key: PRNGKeyArray, epochs_list: list[int], decoder: MLP | None = None
+) -> tuple[CombinedModel]:
     """Trains an MLP model to represent a single image."""
     image_data = image.data
     w, h = image.shape  # 'channels' is separate cuz it must be static
     c = image.channels
 
+    if C().inr_type == InrTypeEnum.STANDARD:
+        mlp_dim = int(C().latent_dim)
+    else:
+        mlp_dim = int((C().latent_dim + 2) * C().num_neighbours)
+
     k1, k2, k3, k4 = jr.split(key, 4)
-    mlp = decoder if decoder is not None else MLP(32, [32], c, k1)
-    latent_points = get_latent_points(k2, image, fraction=0.05)
+    mlp = (
+        decoder.freeze()
+        if decoder is not None
+        else MLP(mlp_dim, [int(C().dec_layers[1] * mlp_dim)], c, k1)
+    )
+    if len(C().dec_layers) > 3:
+        _msg = "The decoder must have at most 1 middle layer"
+        raise ValueError(_msg)
+    latent_points = get_latent_points(k2, image, fraction=C().num_latents)
 
     latent_map = LatentMap(k3, latent_points, image)
     model = CombinedModel(image_data, latent_map, mlp)
     model = model.check()
 
-    optim = optax.adam(learning_rate=1e-3)
+    optim = optax.adam(learning_rate=C().enc_optimiser[1]["lr"])
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
     def scan_fn(carry, _):
         model, opt_state, local_key = carry
         sample_key, subkey = jr.split(local_key)
-        batch_coords, batch_pixels = sample_pixels(image, subkey, fraction=0.25)
+        if C().coord_subsampler[0] == SampleEnum.SUB:
+            batch_coords, batch_pixels = sample_pixels(
+                image, subkey, fraction=C().coord_subsampler[1]["num_samples"]
+            )
+        else:
+            raise NotImplementedError("Only SUB is supported for now")
 
         loss, grads = loss_and_grads(model, batch_coords, batch_pixels)
+        if decoder is not None:
+            grads = eqx.error_if(
+                grads,
+                jnp.any(grads.mlp.layers[0].weight != 0),
+                "Decoder is frozen, but grad is not zero!",
+            )
         updates, opt_state = optim.update(grads, opt_state, eqx.filter(model, eqx.is_inexact_array))
         model = eqx.apply_updates(model, updates)
 
         return (model, opt_state, sample_key), loss
 
-    (model, opt_state, _), losses = jax.lax.scan(
-        scan_fn, (model, opt_state, k4), None, length=epochs
-    )
+    carry = (model, opt_state, k4)
+    models = []
+    for epochs in epochs_list:
+        carry, _ = eqx.filter_jit(jax.lax.scan)(scan_fn, carry, None, length=epochs)
+        models.append(carry[0])
 
-    return model
+    logging.info("Decoder training done")
+
+    return (*models,)
 
 
-def train_decoder(datagen, num_samples, key, epochs=1000):
+@jax.named_scope("train_decoder")
+def train_decoder(datagen, num_samples, key, epochs):  # noqa
     logging.info("Starting to train decoder...")
     k1, key = jr.split(key)
-    _test_image = next(datagen)
+    _test_image, _ = next(datagen)
     c = _test_image.channels
-    mlp = MLP(32, [32], c, k1)
-    mlp_opt = optax.adam(learning_rate=1e-3)
+
+    if C().inr_type == InrTypeEnum.STANDARD:
+        mlp_dim = int(C().latent_dim)
+    else:
+        mlp_dim = int((C().latent_dim + 2) * C().num_neighbours)
+    mlp = MLP(mlp_dim, [int(C().dec_layers[1] * mlp_dim)], c, k1)
+    if len(C().dec_layers) > 3:
+        _msg = "The decoder must have at most 1 middle layer"
+        raise ValueError(_msg)
+    mlp_opt = optax.adam(learning_rate=C().dec_optimiser[1]["lr"])
     mlp_opt_state = mlp_opt.init(eqx.filter(mlp, eqx.is_inexact_array))
 
-    optim = optax.adam(learning_rate=1e-3)
+    optim = optax.adam(learning_rate=C().enc_optimiser[1]["lr"])
 
     def make_model(image, key):
         k2, k3, k4, key = jr.split(key, 4)
-        latent_points = get_latent_points(k2, image, fraction=0.05)
+
+        latent_points = get_latent_points(k2, image, fraction=C().num_latents)
+
         latent_map = LatentMap(k3, latent_points, image)
         model = CombinedModel(image.data, latent_map, mlp)
         model = model.check()
@@ -152,7 +195,7 @@ def train_decoder(datagen, num_samples, key, epochs=1000):
     images = []
     max_w = max_h = 0
     for _ in tqdm(range(num_samples)):
-        images.append(next(datagen))
+        images.append(next(datagen)[0])
         max_w = max(images[-1].max_shape()[0], max_w)
         max_h = max(images[-1].max_shape()[1], max_h)
 
@@ -166,7 +209,7 @@ def train_decoder(datagen, num_samples, key, epochs=1000):
         opt_state = eqx.filter_jit(optim.init)(
             eqx.filter(model, model.latent_map_only(eqx.is_inexact_array))
         )
-        return model, opt_state
+        return model.check(), opt_state
 
     g_model_soa, g_opt_state_soa = jax.vmap(init_model_and_opt)(
         g_image_soa, jr.split(key, len(images))
@@ -183,8 +226,23 @@ def train_decoder(datagen, num_samples, key, epochs=1000):
             accumulated_mlp_grads, key = carry_inner
 
             sample_key, subkey = jr.split(key)
-            batch_coords, batch_pixels = sample_pixels(image, subkey, fraction=0.25)
+            if C().coord_subsampler[0] == SampleEnum.SUB:
+                batch_coords, batch_pixels = sample_pixels(
+                    image, subkey, fraction=C().coord_subsampler[1]["num_samples"]
+                )
+            else:
+                raise NotImplementedError("Only SUB is supported for now")
             loss, grads = loss_and_grads(model, batch_coords, batch_pixels)
+
+            grads = eqx.error_if(grads, jnp.isnan(loss), "Nan loss encountered, critical")
+            grads = eqx.error_if(
+                grads, jnp.any(jnp.isnan(grads.mlp.layers[0].weight)), "Nan grad in mlp, critical"
+            )
+            grads = eqx.error_if(
+                grads,
+                jnp.any(jnp.isnan(grads.latent_map.embeddings)),
+                "Nan grad in latent_map, critical",
+            )
 
             _prev_mlp_param = model.mlp.layers[0].weight[0, 0]
 
