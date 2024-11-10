@@ -250,7 +250,10 @@ def batchify(generator, batch_size):
         image_batch = []
         pathes = []
         while len(image_batch) < batch_size:
-            image, path = next(generator)
+            try:
+                image, path = next(generator)
+            except StopIteration:
+                break
             path = make_target_path(path)
 
             if path.exists() and not FLAGS.overwrite:
