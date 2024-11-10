@@ -47,6 +47,11 @@ flags.DEFINE_bool(
     "Use a set of predetermined placheloder sizes when training for images."
     "DO NOT ENABLE IF IMAGES ARE SAME SIZE. Also, feel free to modify the _GRID list in utils.py",
 )
+flags.DEFINE_bool(
+    "use_cached_decoder",
+    False,  # noqa
+    "Use a trained decoder from the last run: disable for real experiments!!!",
+)
 
 # general
 flags.DEFINE_integer("num_images", -1, "Number of images to train on, if -1 use all images.")
@@ -203,9 +208,7 @@ def data_loader(dataset_name):  # noqa
                     image_shape = image_data.shape[:2]
                     if image_data.ndim == 2:
                         image_data = image_data[..., None]
-                        channels = 1
-                    else:
-                        channels = image_data.shape[2]
+                    channels = C().out_dim
                     if image_data.max() > 2:
                         image_data = jnp.array(image_data, dtype=jnp.float32) / 255.0
                     image = Image(
@@ -249,8 +252,8 @@ def batchify(generator, batch_size):
             image, path = next(generator)
             path = make_target_path(path)
 
-            if path.exists():
-                continue
+            # if path.exists():
+            #    continue
 
             max_w = max(max_w, image.shape[0])
             max_h = max(max_h, image.shape[1])
@@ -344,17 +347,24 @@ def bench_dataset(dataset_name):
             image_sharded, jr.split(key, image_sharded.shape.shape[0])
         )
         logging.info("... done; evaluating...")
-        psnr, preds = eqx.filter_vmap(eval_image)(models_list[-1], image_sharded)
-        logging.info("Batch PSNR: %.2f +- %.2f", float(psnr.mean()), float(psnr.std()))
+
+        preds = []
+        for i, m in enumerate(models_list):
+            psnr, _preds = eqx.filter_vmap(eval_image)(m, image_sharded)
+            logging.info(f"PSNR@{i}: %.2f +- %.2f", float(psnr.mean()), float(psnr.std()))
+            preds.append(_preds)
 
         with jax.ensure_compile_time_eval():
             for i in range(batch_size):
                 # partition the model
                 res_dict = {}
-                for ep, model in zip(abs_epochs[1:], [*models_list]):
+                preds_dict = {}
+                for ep, model, pred in zip(abs_epochs[1:], [*models_list], [*preds]):
                     model_i = jax.tree.map(lambda x: x[i], model, is_leaf=eqx.is_array)
+                    pred_i = pred[i]
                     res_dict[str(ep)] = model_i
-                record_results(res_dict, preds[i], image_path[i])
+                    preds_dict[str(ep)] = pred_i
+                record_results(res_dict, preds_dict, image_path[i])
 
 
 def main(argv):

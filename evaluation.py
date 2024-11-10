@@ -37,14 +37,15 @@ def eval_image(model: CombinedModel, image: Image):
 def record_results(model_chks, preds, path: Path):
     # path is the path of the image, so we want to remove file extension and rename the root folder
     with jax.ensure_compile_time_eval():
-        path.mkdir(parents=True)
+        path.mkdir(parents=True, exist_ok=True)
+        last_key = list(model_chks.keys())[-1]
+        mask = jnp.isnan(model_chks[last_key].latent_map.embeddings).any(axis=1)
+        jnp.save(path / Path("positions.npy"), model_chks[last_key].latent_map.positions[~mask])
         for idx, model in model_chks.items():
             latents = model.latent_map.embeddings
-            latents = latents[~jnp.isnan(latents).any(axis=1)]
-            jnp.save(path / Path(f"latents_{idx}.npy"), latents)
-        if preds.shape[-1] == 1:
-            preds = preds[..., 0]
-        if len(preds.shape) == 2:
-            plt.imsave(path / Path("preds.png"), preds.T)
-        else:
-            plt.imsave(path / Path("preds.png"), jnp.swapaxes(preds, 0, 1))
+            jnp.save(path / Path(f"latents_{idx}.npy"), latents[~mask])
+            w_preds = preds[idx]
+            if w_preds.shape[-1] == 1:
+                w_preds = w_preds[..., 0]
+            w_preds = w_preds.T if len(w_preds.shape) == 2 else jnp.swapaxes(w_preds, 0, 1)
+            plt.imsave(path / Path(f"preds_{idx}.png"), w_preds)

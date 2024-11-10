@@ -176,6 +176,10 @@ def train_decoder(datagen, num_samples, key, epochs):  # noqa
     if len(C().dec_layers) > 3:
         _msg = "The decoder must have at most 1 middle layer"
         raise ValueError(_msg)
+
+    if FLAGS.use_cached_decoder:
+        mlp = eqx.tree_deserialise_leaves(".cached_decoder.eqx", mlp)
+        return mlp
     mlp_opt = optax.adam(learning_rate=C().dec_optimiser[1]["lr"])
     mlp_opt_state = mlp_opt.init(eqx.filter(mlp, eqx.is_inexact_array))
 
@@ -293,5 +297,6 @@ def train_decoder(datagen, num_samples, key, epochs):  # noqa
     (mlp, _, _, _, _), _ = eqx.filter_jit(jax.lax.scan)(epoch_step, carry, None, length=epochs)
 
     logging.info("Decoder training done")
+    eqx.tree_serialise_leaves(".cached_decoder.eqx", mlp)
 
     return mlp
