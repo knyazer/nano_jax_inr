@@ -40,6 +40,7 @@ flags.DEFINE_enum(
 flags.DEFINE_string(
     "config", None, "Path to the config file. It is in the root of the folder with images."
 )
+flags.DEFINE_bool("overwrite", False, "Overwrite the results if they already exist.")
 
 flags.DEFINE_bool(
     "use_grid",
@@ -252,8 +253,8 @@ def batchify(generator, batch_size):
             image, path = next(generator)
             path = make_target_path(path)
 
-            # if path.exists():
-            #    continue
+            if path.exists() and not FLAGS.overwrite:
+                continue
 
             max_w = max(max_w, image.shape[0])
             max_h = max(max_h, image.shape[1])
