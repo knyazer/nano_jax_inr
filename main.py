@@ -194,6 +194,7 @@ def data_loader(dataset_name):  # noqa
         # but does not sort images, assumes they are constant size
         def ablation_image_gen():
             path = Path("Image datasets") / Path(C().dataset)
+            assert path.exists(), f"Path {path} does not exist"
             for file in path.rglob("*"):
                 if not str(file).lower().endswith((".png", ".jpeg", ".jpg")):
                     continue
@@ -346,13 +347,14 @@ def bench_dataset(dataset_name):
         psnr, preds = eqx.filter_vmap(eval_image)(models_list[-1], image_sharded)
         logging.info("Batch PSNR: %.2f +- %.2f", float(psnr.mean()), float(psnr.std()))
 
-        for i in range(batch_size):
-            # partition the model
-            res_dict = {}
-            for ep, model in zip(abs_epochs[1:], [*models_list]):
-                model_i = jax.tree.map(lambda x: x[i], model, is_leaf=eqx.is_array)
-                res_dict[str(ep)] = model_i
-            record_results(res_dict, preds[i], image_path[i])
+        with jax.ensure_compile_time_eval():
+            for i in range(batch_size):
+                # partition the model
+                res_dict = {}
+                for ep, model in zip(abs_epochs[1:], [*models_list]):
+                    model_i = jax.tree.map(lambda x: x[i], model, is_leaf=eqx.is_array)
+                    res_dict[str(ep)] = model_i
+                record_results(res_dict, preds[i], image_path[i])
 
 
 def main(argv):
