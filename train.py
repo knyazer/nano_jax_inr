@@ -200,8 +200,11 @@ def train_decoder(datagen, num_samples, key, epochs):  # noqa
     max_w = max_h = 0
     for _ in tqdm(range(num_samples)):
         images.append(next(datagen)[0])
-        max_w = max(images[-1].max_shape()[0], max_w)
-        max_h = max(images[-1].max_shape()[1], max_h)
+        w, h = images[-1].max_shape()
+        if w > 500 or h > 500:
+            break
+        max_w = max(w, max_w)
+        max_h = max(h, max_h)
 
     for i in range(len(images)):
         images[i] = images[i].enlarge((max_w, max_h))
