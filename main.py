@@ -53,6 +53,11 @@ flags.DEFINE_bool(
     False,  # noqa
     "Use a trained decoder from the last run: disable for real experiments!!!",
 )
+flags.DEFINE_bool(
+    "sort_by_size",
+    False,  # noqa
+    "Sort images by size, useful for debugging/imagenette, bad otherwise.",
+)
 
 # general
 flags.DEFINE_integer("num_images", -1, "Number of images to train on, if -1 use all images.")
@@ -267,6 +272,7 @@ def batchify(generator, batch_size):
 
         logging.info(f"Enlarging to ({max_w}, {max_h})...")
         # now we wish to transform the images into Images with placeholder being the max_size
+        breakpoint()
         for i in range(len(image_batch)):
             image_batch[i] = image_batch[i].enlarge((max_w, max_h))
 
