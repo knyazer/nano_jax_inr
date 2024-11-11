@@ -199,10 +199,11 @@ def train_decoder(datagen, num_samples, key, epochs):  # noqa
     images = []
     max_w = max_h = 0
     while len(images) < num_samples:
-        images.append(next(datagen)[0])
-        w, h = images[-1].max_shape()
+        next_image = next(datagen)[0]
+        w, h = next_image.max_shape()
         if w > 500 or h > 500:
             continue
+        images.append(next_image)
         max_w = max(w, max_w)
         max_h = max(h, max_h)
 
