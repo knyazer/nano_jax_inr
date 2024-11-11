@@ -96,57 +96,54 @@ class Image(eqx.Module):
         return C().num_latents
 
     def enlarge(self, new_max_shape):
-        with jax.ensure_compile_time_eval():
-            new_max_shape = (int(new_max_shape[0]), int(new_max_shape[1]))
-            new_image = Image(
-                self.data,
-                self.shape,
-                self.channels,
-                maxsize=new_max_shape,
-            )
-            return new_image
+        new_max_shape = (int(new_max_shape[0]), int(new_max_shape[1]))
+        new_image = Image(
+            self.data,
+            self.shape,
+            self.channels,
+            maxsize=new_max_shape,
+        )
+        return new_image
 
     def shrink(self):
-        with jax.ensure_compile_time_eval():
-            # given that we are storing an array of shapes
-            assert len(self.shape.shape) == 2
-            # we are going to shrink the image to the maximum shape
-            new_max_shape = self.shape.max(axis=0)
-            new_image = Image(
-                self.data,
-                self.shape,
-                self.channels,
-                maxsize=(int(new_max_shape[0]), int(new_max_shape[1])),
-            )
-            return new_image
+        # given that we are storing an array of shapes
+        assert len(self.shape.shape) == 2
+        # we are going to shrink the image to the maximum shape
+        new_max_shape = self.shape.max(axis=0)
+        new_image = Image(
+            self.data,
+            self.shape,
+            self.channels,
+            maxsize=(int(new_max_shape[0]), int(new_max_shape[1])),
+        )
+        return new_image
 
     def shrink_to_grid(self):
         # shrinks to the smallest grid size that is larger than max size
-        with jax.ensure_compile_time_eval():
-            assert len(self.shape.shape) == 2
-            new_max_shape = self.shape.max(axis=0)
-            new_max_shape = (int(new_max_shape[0]), int(new_max_shape[1]))
-            original_shape = new_max_shape
+        assert len(self.shape.shape) == 2
+        new_max_shape = self.shape.max(axis=0)
+        new_max_shape = (int(new_max_shape[0]), int(new_max_shape[1]))
+        original_shape = new_max_shape
 
-            min_grid_area = 1e10
-            for grid_w, grid_h in _GRID:
-                if (
-                    grid_w >= new_max_shape[0]
-                    and grid_h >= new_max_shape[1]
-                    and grid_w * grid_h < min_grid_area
-                ):
-                    min_grid_area = grid_w * grid_h
-                    new_max_shape = (grid_w, grid_h)
+        min_grid_area = 1e10
+        for grid_w, grid_h in _GRID:
+            if (
+                grid_w >= new_max_shape[0]
+                and grid_h >= new_max_shape[1]
+                and grid_w * grid_h < min_grid_area
+            ):
+                min_grid_area = grid_w * grid_h
+                new_max_shape = (grid_w, grid_h)
 
-            logging.info(f"Expanded from {original_shape} to {new_max_shape}")
-            new_image = Image(
-                self.data,
-                self.shape,
-                self.channels,
-                maxsize=new_max_shape,
-            )
+        logging.info(f"Expanded from {original_shape} to {new_max_shape}")
+        new_image = Image(
+            self.data,
+            self.shape,
+            self.channels,
+            maxsize=new_max_shape,
+        )
 
-            return new_image
+        return new_image
 
 
 def make_mesh(shape):

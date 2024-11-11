@@ -282,6 +282,7 @@ def batchify(generator, batch_size):
                 and jnp.all(image_soa.shape[:, 1] == image_soa.shape[0, 1])
             )
             or batch_size == 1
+            or FLAGS.use_grid
         ):
             image_soa = image_soa.shrink_to_grid()
         else:
