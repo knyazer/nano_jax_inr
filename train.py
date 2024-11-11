@@ -209,6 +209,7 @@ def train_decoder(datagen, num_samples, key, epochs):  # noqa
     logging.info("Done loading images.")
     for i in range(len(images)):
         images[i] = images[i].enlarge((max_w, max_h))
+    breakpoint()
     g_image_soa = jax.tree.map(lambda *args: jnp.stack(args), *images, is_leaf=eqx.is_array)
 
     def init_model_and_opt(image, subkey):
