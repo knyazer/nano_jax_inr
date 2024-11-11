@@ -198,7 +198,7 @@ def train_decoder(datagen, num_samples, key, epochs):  # noqa
     logging.info("Loading images...")
     images = []
     max_w = max_h = 0
-    for _ in tqdm(range(num_samples)):
+    while len(images) < num_samples:
         images.append(next(datagen)[0])
         w, h = images[-1].max_shape()
         if w > 500 or h > 500:
@@ -206,6 +206,7 @@ def train_decoder(datagen, num_samples, key, epochs):  # noqa
         max_w = max(w, max_w)
         max_h = max(h, max_h)
 
+    logging.info("Done loading images.")
     for i in range(len(images)):
         images[i] = images[i].enlarge((max_w, max_h))
     g_image_soa = jax.tree.map(lambda *args: jnp.stack(args), *images, is_leaf=eqx.is_array)

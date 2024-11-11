@@ -272,7 +272,6 @@ def batchify(generator, batch_size):
 
         logging.info(f"Enlarging to ({max_w}, {max_h})...")
         # now we wish to transform the images into Images with placeholder being the max_size
-        breakpoint()
         for i in range(len(image_batch)):
             image_batch[i] = image_batch[i].enlarge((max_w, max_h))
 
