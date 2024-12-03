@@ -172,8 +172,11 @@ def train_decoder(datagen, num_samples, key, epochs):  # noqa
         mlp_dim = int(C().latent_dim)
     else:
         mlp_dim = int((C().latent_dim + 2) * C().num_neighbours)
-    mlp = MLP(mlp_dim, [int(C().dec_layers[1] * mlp_dim)], c, k1)
-    if len(C().dec_layers) > 3:
+    if len(C().dec_layers) == 3:
+        mlp = MLP(mlp_dim, [int(C().dec_layers[1] * mlp_dim)], c, k1)
+    elif len(C().dec_layers) == 2:
+        mlp = MLP(mlp_dim, [], c, k1)
+    else:
         _msg = "The decoder must have at most 1 middle layer"
         raise ValueError(_msg)
 
@@ -210,7 +213,6 @@ def train_decoder(datagen, num_samples, key, epochs):  # noqa
     logging.info("Done loading images.")
     for i in range(len(images)):
         images[i] = images[i].enlarge((max_w, max_h))
-    breakpoint()
     g_image_soa = jax.tree.map(lambda *args: jnp.stack(args), *images, is_leaf=eqx.is_array)
 
     def init_model_and_opt(image, subkey):

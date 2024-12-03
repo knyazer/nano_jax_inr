@@ -14,8 +14,8 @@ from jax_smi import initialise_tracking
 from sklearn.datasets import fetch_openml
 from tqdm import tqdm
 
+from config import get_config, load_config_from_py, set_config
 from config import get_config as C  # noqa
-from config import load_config_from_py
 from dataloader import load_imagenette_images, preprocess_mnist
 from evaluation import eval_image, record_results
 from train import train_decoder, train_image
@@ -40,6 +40,7 @@ flags.DEFINE_enum(
 flags.DEFINE_string(
     "config", None, "Path to the config file. It is in the root of the folder with images."
 )
+flags.DEFINE_integer("_index", 0, "")
 flags.DEFINE_bool("overwrite", False, "Overwrite the results if they already exist.")
 
 flags.DEFINE_bool(
@@ -248,6 +249,11 @@ def data_loader(dataset_name):  # noqa
 def batchify(generator, batch_size):
     # load images, if image is smaller than 1000x1000 batch it with batch_size other images,
     # otherwise batch it with batch_size / 4 other images
+    _batch_size = batch_size
+    batch_size = int(batch_size / (get_config().dec_layers[1] * 40 / get_config().latent_dim))
+    batch_size = max(batch_size, 1)
+    batch_size = (batch_size // len(jax.devices()) + 1) * len(jax.devices())
+    logging.info(f"Batch size: {_batch_size} -> {batch_size}")
 
     while True:
         max_h = 0
@@ -258,6 +264,7 @@ def batchify(generator, batch_size):
             try:
                 image, path = next(generator)
             except StopIteration:
+                logging.info("Stop iteration in batchify")
                 break
             path = make_target_path(path)
 
@@ -269,6 +276,9 @@ def batchify(generator, batch_size):
 
             image_batch.append(image)
             pathes.append(path)
+
+        if len(image_batch) == 0:
+            break
 
         logging.info(f"Enlarging to ({max_w}, {max_h})...")
         # now we wish to transform the images into Images with placeholder being the max_size
@@ -305,6 +315,7 @@ def batchify(generator, batch_size):
 
 
 def bench_dataset(dataset_name):
+    set_config(FLAGS._index)
     total = 0
     batch_size = FLAGS.batch_size
     if dataset_name == "mnist":

@@ -1,7 +1,9 @@
 # ruff: noqa
 import inspect
+import numpy as np
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from absl import logging
 from functools import partial
 from typing import List, Tuple, Union
 
@@ -153,6 +155,9 @@ class Config:
 
 
 _CONFIG = Config()
+_ind = 0
+_sz = 0
+_arange = []
 
 
 def load_config_from_py(path: str):
@@ -165,7 +170,48 @@ def load_config_from_py(path: str):
         exec(f.read(), namespace)
     global _CONFIG
     _CONFIG = namespace["config"]
+    global _sz, _arange
+    _sz = (
+        len(_CONFIG.latent_dim),
+        len(_CONFIG.num_latents),
+        len(_CONFIG.num_neighbours),
+        len(_CONFIG.latent_position_init),
+        len(_CONFIG.dec_layers),
+    )
+    _arange = np.array(np.unravel_index(np.arange(np.prod(_sz)), _sz)).T
+
+
+def set_config(i):
+    global _ind
+    _ind = i
+
+    logging.info(get_config().alias)
+
+
+from copy import deepcopy
 
 
 def get_config():
-    return _CONFIG
+    config = deepcopy(_CONFIG)
+    i, j, k, l, m = _arange[_ind]
+
+    config.latent_dim = config.latent_dim[i]
+    config.num_latents = config.num_latents[j]
+    config.num_neighbours = config.num_neighbours[k]
+    config.latent_position_init = config.latent_position_init[l]
+    config.dec_layers = config.dec_layers[m]
+
+    config.alias = (
+        config.alias
+        + "_"
+        + str(config.latent_dim)
+        + "_"
+        + str(config.num_latents)
+        + "_"
+        + str(config.num_neighbours)
+        + "_"
+        + str(config.latent_position_init[1]["num_points"])
+        + "_"
+        + str(config.dec_layers[1])
+    )
+    return config
